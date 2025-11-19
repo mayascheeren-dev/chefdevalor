@@ -1,9 +1,10 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect } from 'react';
 import { initializeApp } from "firebase/app";
 import { getAuth, signInWithEmailAndPassword, signOut, onAuthStateChanged } from "firebase/auth";
 import { 
   Calculator, Settings, Plus, Trash2, Package, Clock, ChefHat, 
-  Sparkles, ShoppingCart, Calendar, TrendingUp, LogOut, Copy, Check, Menu, X, Save, Edit, Users, Cake, Phone, AlertCircle, ChevronRight, User
+  Sparkles, ShoppingCart, Calendar, TrendingUp, LogOut, Copy, Check, Menu, X, 
+  Save, Edit, Users, Cake, Phone, User, AlertCircle, ChevronRight
 } from 'lucide-react';
 
 // --- 🔒 CONFIGURAÇÃO DO FIREBASE ---
@@ -17,28 +18,21 @@ const firebaseConfig = {
   measurementId: "G-JR8Z43E95X"
 };
 
+// Inicializa Firebase
 const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 
 // --- TIPOS ---
 interface Ingredient { id: number; name: string; packageWeight: number; cost: number; }
-interface Recipe { id: number; name: string; yields: number; time: number; profit: number; ingredients: {id: number, qty: number}[] }
+interface RecipeIngredient { id: number; qty: number; }
+interface Recipe { id: number; name: string; yields: number; time: number; profit: number; ingredients: RecipeIngredient[] }
 interface Client { id: number; name: string; phone: string; birthday: string; }
 interface Order { 
-  id: number; 
-  clientId: number; 
-  clientName: string; 
-  deliveryDate: string; 
-  items: string; 
-  value: number; 
-  paymentMethod: string;
-  status: 'pendente' | 'pago' | 'entregue'; 
+  id: number; clientId: number; clientName: string; deliveryDate: string; 
+  items: string; value: number; paymentMethod: string; status: 'pendente' | 'pago' | 'entregue'; 
 }
-interface CompanyProfile {
-    businessName: string;
-    chefName: string;
-    cnpj: string;
-}
+interface CompanyProfile { businessName: string; chefName: string; cnpj: string; }
+interface ShoppingItem { type: 'recipe' | 'ingredient'; id: number; count: number; }
 
 // --- DADOS INICIAIS ---
 const initialIngredients: Ingredient[] = [
@@ -67,9 +61,10 @@ const App = () => {
   const [companyProfile, setCompanyProfile] = useState<CompanyProfile>(() => JSON.parse(localStorage.getItem('cv_profile') || '{"businessName":"","chefName":"","cnpj":""}'));
 
   // --- ESTADOS DE FORMULÁRIOS ---
-  // Receita sendo editada ou criada
-  const [activeRecipe, setActiveRecipe] = useState<Recipe | null>(null); 
-  
+  const [activeRecipe, setActiveRecipe] = useState<Recipe | null>(null);
+  const [currentRecipe, setCurrentRecipe] = useState<Recipe>({ id: 0, name: '', yields: 1, time: 60, profit: 30, ingredients: [] });
+  const [isEditingRecipe, setIsEditingRecipe] = useState(false);
+
   const [newIngredient, setNewIngredient] = useState({ name: '', packageWeight: '', cost: '' });
   const [editingIngredient, setEditingIngredient] = useState<Ingredient | null>(null);
   
@@ -79,9 +74,9 @@ const App = () => {
   const [aiPrompt, setAiPrompt] = useState('');
   const [aiResponse, setAiResponse] = useState('');
   const [isAiLoading, setIsAiLoading] = useState(false);
-  const [shoppingList, setShoppingList] = useState<{recipeId: number, count: number}[]>([]);
+  const [shoppingList, setShoppingList] = useState<ShoppingItem[]>([]);
 
-  // Salvar dados automaticamente
+  // Efeitos
   useEffect(() => { localStorage.setItem('cv_config', JSON.stringify(config)); }, [config]);
   useEffect(() => { localStorage.setItem('cv_ingredients', JSON.stringify(dbIngredients)); }, [dbIngredients]);
   useEffect(() => { localStorage.setItem('cv_recipes', JSON.stringify(recipes)); }, [recipes]);
@@ -89,13 +84,12 @@ const App = () => {
   useEffect(() => { localStorage.setItem('cv_orders', JSON.stringify(orders)); }, [orders]);
   useEffect(() => { localStorage.setItem('cv_profile', JSON.stringify(companyProfile)); }, [companyProfile]);
   
-  // Autenticação Rápida
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, (u) => { setUser(u); setLoadingAuth(false); });
     return () => unsub();
   }, []);
 
-  // --- LÓGICA DE NEGÓCIO ---
+  // --- LÓGICA FINANCEIRA ---
   const formatMoney = (v: number) => v.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
   
   const getHourlyRate = () => {
@@ -110,7 +104,7 @@ const App = () => {
       const ing = dbIngredients.find(d => d.id === i.id);
       if (ing) matCost += (ing.cost / ing.packageWeight) * i.qty;
     });
-    const varCost = matCost * 0.10; // 10%
+    const varCost = matCost * 0.10; 
     const laborCost = (rec.time / 60) * getHourlyRate();
     const totalCost = matCost + varCost + laborCost;
     const finalPrice = totalCost * (1 + (rec.profit / 100));
@@ -122,43 +116,41 @@ const App = () => {
       e.preventDefault(); 
       setLoginError('');
       try { await signInWithEmailAndPassword(auth, email, password); } 
-      catch (e) { setLoginError("Dados incorretos. Tente novamente."); } 
+      catch (e) { setLoginError("Dados incorretos. Verifique e-mail e senha."); } 
   };
 
-  // 3. Exclusão/Edição de Ingredientes
   const handleDeleteIngredient = (id: number) => {
-      // Verifica se está sendo usado em alguma receita
       const isUsed = recipes.some(r => r.ingredients.some(i => i.id === id));
-      if(isUsed && !window.confirm("Este ingrediente é usado em receitas salvas. Se apagar, o cálculo delas ficará errado. Continuar?")) return;
+      if(isUsed && !window.confirm("Este ingrediente é usado em receitas. Continuar?")) return;
       if(!isUsed && !window.confirm("Apagar ingrediente?")) return;
       setDbIngredients(dbIngredients.filter(i => i.id !== id));
   };
 
-  // 2. Salvar Receita (Cria ou Atualiza)
   const handleSaveRecipe = () => {
-      if (!activeRecipe?.name) return alert("Dê um nome para a receita!");
+      if (!currentRecipe.name) return alert("Dê um nome para a receita!");
       
-      const existingIndex = recipes.findIndex(r => r.id === activeRecipe.id);
-      let newRecipes = [...recipes];
-      
-      if (existingIndex >= 0) {
-          // Atualiza existente
-          newRecipes[existingIndex] = activeRecipe;
+      if (isEditingRecipe) {
+          setRecipes(recipes.map(r => r.id === currentRecipe.id ? currentRecipe : r));
           alert("Receita atualizada!");
+          setIsEditingRecipe(false);
       } else {
-          // Cria nova
-          newRecipes.push({...activeRecipe, id: Date.now()});
-          alert("Nova receita criada!");
+          setRecipes([...recipes, {...currentRecipe, id: Date.now()}]);
+          alert("Receita salva!");
       }
-      setRecipes(newRecipes);
-      setActiveRecipe(null); // Volta para a lista
+      setCurrentRecipe({ id: 0, name: '', yields: 1, time: 60, profit: 30, ingredients: [] });
+      setActiveRecipe(null);
   };
-  
+
+  const handleEditRecipe = (rec: Recipe) => {
+      setCurrentRecipe(rec);
+      setIsEditingRecipe(true);
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+      setActiveRecipe(rec); 
+  };
+
   const handleDeleteRecipe = (id: number) => {
-      if(window.confirm("Tem certeza que deseja excluir esta receita?")) {
-          setRecipes(recipes.filter(r => r.id !== id));
-      }
-  }
+      if(window.confirm("Excluir receita?")) setRecipes(recipes.filter(r => r.id !== id));
+  };
 
   const handleAddIngredient = () => {
     if (newIngredient.name && newIngredient.cost) {
@@ -168,17 +160,17 @@ const App = () => {
   };
 
   const handleUpdateIngredient = () => {
-    if(editingIngredient) {
-        setDbIngredients(dbIngredients.map(ing => ing.id === editingIngredient.id ? editingIngredient : ing));
-        setEditingIngredient(null);
-    }
+      if(editingIngredient) {
+          setDbIngredients(dbIngredients.map(ing => ing.id === editingIngredient.id ? editingIngredient : ing));
+          setEditingIngredient(null);
+      }
   };
 
   const handleAddClient = () => {
     if (newClient.name) {
         setClients([...clients, { id: Date.now(), ...newClient }]);
         setNewClient({ name: '', phone: '', birthday: '' });
-        alert('Cliente cadastrado com sucesso!');
+        alert('Cliente cadastrado!');
     }
   };
 
@@ -196,27 +188,29 @@ const App = () => {
               status: 'pendente'
           }]);
           setNewOrder({ clientId: '', deliveryDate: '', items: '', value: '', paymentMethod: 'Pix' });
-          alert('Pedido agendado!');
-      } else {
-          alert("Selecione um cliente e informe o valor.");
-      }
+          alert('Agendado!');
+      } else alert("Preencha os dados.");
   };
 
   const confirmPayment = (orderId: number) => {
-      if(window.confirm("Confirmar recebimento do pagamento?")) {
+      if(window.confirm("Confirmar pagamento?")) {
           setOrders(orders.map(o => o.id === orderId ? {...o, status: 'pago'} : o));
       }
   };
 
-  const handleAiGenerate = async () => {
-    setIsAiLoading(true);
-    setTimeout(() => {
-        setAiResponse(✨ **Sugestão de Legenda:**\n\n"Atenção formiguinhas! 🐜\n\nO nosso ${aiPrompt || 'doce'} acabou de sair da produção e está imperdível. Feito com ingredientes premium para adoçar sua semana.\n\n📲 Peça pelo link na bio!\n#${companyProfile.businessName?.replace(/\s/g, '') || 'ConfeitariaArtesanal'} #ChefDeValor");
-        setIsAiLoading(false);
-    }, 2000);
+  const handleAddToShoppingList = (type: 'recipe'|'ingredient', id: number, delta: number) => {
+      setShoppingList(prev => {
+          const existing = prev.find(i => i.type === type && i.id === id);
+          if (existing) {
+              const newCount = existing.count + delta;
+              if (newCount <= 0) return prev.filter(i => !(i.type === type && i.id === id)); 
+              return prev.map(i => i.type === type && i.id === id ? {...i, count: newCount} : i);
+          }
+          if (delta > 0) return [...prev, {type, id, count: delta}];
+          return prev;
+      });
   };
 
-  // 4. Lista de Compras Inteligente
   const generateShoppingListText = () => {
     const totals: Record<string, {qty: number, cost: number}> = {};
     let estimatedTotal = 0;
@@ -240,7 +234,7 @@ const App = () => {
             } else if (item.type === 'ingredient') {
                 const dbIng = dbIngredients.find(d => d.id === item.id);
                 if (dbIng) {
-                    const totalQty = dbIng.packageWeight * item.count; // Assume 1 unidade = 1 embalagem
+                    const totalQty = dbIng.packageWeight * item.count; 
                     const estimatedCost = dbIng.cost * item.count;
                     
                     if (!totals[dbIng.name]) totals[dbIng.name] = {qty: 0, cost: 0};
@@ -252,19 +246,24 @@ const App = () => {
         }
     });
 
-    let text = *🛒 Lista de Compras - ${companyProfile.businessName || 'Chef de Valor'}*\n\n;
+    let text = `*🛒 Lista de Compras - ${companyProfile.businessName || 'Chef de Valor'}*\n\n`;
     Object.entries(totals).forEach(([name, data]) => {
-        text += ▫ ${name}: ${data.qty.toFixed(0)}g (~${formatMoney(data.cost)})\n;
+        text += `▫️ ${name}: ${data.qty.toFixed(0)}g (~${formatMoney(data.cost)})\n`;
     });
-    text += \n*💰 Previsão de Custo Total: ${formatMoney(estimatedTotal)}*;
+    text += `\n*💰 Previsão Total: ${formatMoney(estimatedTotal)}*`;
     return text;
   };
 
-  // --- RENDERIZAÇÃO ---
+  const handleAiGenerate = () => {
+    setIsAiLoading(true);
+    setTimeout(() => {
+        setAiResponse(`✨ **Sugestão de Legenda:**\n\n"Atenção formiguinhas! 🐜\n\nO nosso ${aiPrompt || 'doce'} acabou de sair da produção e está imperdível. Feito com ingredientes premium para adoçar sua semana.\n\n📲 Peça pelo link na bio!\n#${companyProfile.businessName?.replace(/\s/g, '') || 'ConfeitariaArtesanal'} #ChefDeValor"`);
+        setIsAiLoading(false);
+    }, 2000);
+  };
 
-  if (loadingAuth) return <div className="min-h-screen flex items-center justify-center bg-[#FDF6F0] text-[#C58945] font-bold">Carregando sistema...</div>;
+  if (loadingAuth) return <div className="min-h-screen flex items-center justify-center bg-[#FDF6F0] text-[#C58945] font-bold">Carregando...</div>;
 
-  // 1. TELA DE LOGIN (Ágil)
   if (!user) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-[#FDF6F0] p-6 font-serif">
@@ -292,7 +291,7 @@ const App = () => {
        {editingIngredient && (
           <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4 backdrop-blur-sm">
               <div className="bg-white p-6 rounded-2xl shadow-2xl w-full max-w-md border border-[#E8DED5]">
-                  <h3 className="text-xl font-bold mb-4">Editar: {editingIngredient.name}</h3>
+                  <h3 className="text-xl font-bold mb-4 text-[#4A3630]">Editar: {editingIngredient.name}</h3>
                   <div className="space-y-4">
                       <div><label className="text-xs font-bold uppercase text-[#8D6E63]">Preço Pago (R$)</label><input type="number" value={editingIngredient.cost} onChange={e => setEditingIngredient({...editingIngredient, cost: Number(e.target.value)})} className="w-full p-3 border border-[#E8DED5] rounded-xl" /></div>
                       <div><label className="text-xs font-bold uppercase text-[#8D6E63]">Peso da Embalagem (g/ml)</label><input type="number" value={editingIngredient.packageWeight} onChange={e => setEditingIngredient({...editingIngredient, packageWeight: Number(e.target.value)})} className="w-full p-3 border border-[#E8DED5] rounded-xl" /></div>
@@ -306,7 +305,7 @@ const App = () => {
       )}
 
       {/* SIDEBAR */}
-      <div className={fixed inset-y-0 left-0 z-40 w-64 bg-[#4A3630] text-[#FDF6F0] transform ${mobileMenuOpen ? 'translate-x-0' : '-translate-x-full'} md:translate-x-0 transition-transform duration-300 shadow-2xl flex flex-col}>
+      <div className={`fixed inset-y-0 left-0 z-40 w-64 bg-[#4A3630] text-[#FDF6F0] transform ${mobileMenuOpen ? 'translate-x-0' : '-translate-x-full'} md:translate-x-0 transition-transform duration-300 shadow-2xl flex flex-col`}>
         <div className="p-6 border-b border-[#5D443C]">
             <h1 className="font-serif text-xl font-bold text-[#C58945] truncate">{companyProfile.businessName || 'Chef de Valor'}</h1>
             <p className="text-xs opacity-70 truncate">Olá, {companyProfile.chefName || 'Chef'}!</p>
@@ -323,7 +322,7 @@ const App = () => {
                 { id: 'clients', label: 'Clientes', icon: Users },
                 { id: 'config', label: 'Configurações', icon: Settings },
             ].map(item => (
-                <button key={item.id} onClick={() => { setView(item.id); setMobileMenuOpen(false); setActiveRecipe(null); }} className={w-full flex items-center gap-3 p-3 rounded-xl transition-all ${view === item.id ? 'bg-[#C58945] text-white shadow-md' : 'hover:bg-[#5D443C] text-[#E8DED5]'}}>
+                <button key={item.id} onClick={() => { setView(item.id); setMobileMenuOpen(false); setActiveRecipe(null); }} className={`w-full flex items-center gap-3 p-3 rounded-xl transition-all ${view === item.id ? 'bg-[#C58945] text-white shadow-md' : 'hover:bg-[#5D443C] text-[#E8DED5]'}`}>
                     <item.icon size={18} /> <span className="font-medium">{item.label}</span>
                 </button>
             ))}
@@ -343,36 +342,36 @@ const App = () => {
 
         <div className="p-4 md:p-8 max-w-6xl mx-auto w-full pb-20">
             
-            {/* --- DASHBOARD --- */}
+            {/* DASHBOARD */}
             {view === 'dashboard' && (
                 <div className="space-y-6 animate-fade-in">
                     <h2 className="text-3xl font-serif font-bold text-[#4A3630]">Olá, {companyProfile.chefName || 'Chef'}! 👋</h2>
                     <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
                         <div className="bg-white p-6 rounded-3xl shadow-sm border border-[#E8DED5]">
                             <p className="text-xs text-[#8D6E63] font-bold uppercase tracking-wide">Faturamento (Entregue)</p>
-                            <p className="text-3xl font-serif font-bold text-[#2E7D32]">{formatMoney(orders.reduce((acc, o) => o.status !== 'pendente' ? acc + o.value : acc, 0))}</p>
+                            <p className="text-3xl font-serif font-bold text-[#2E7D32]">{formatMoney(orders.reduce((acc: number, o: any) => o.status !== 'pendente' ? acc + o.value : acc, 0))}</p>
                         </div>
                         <div className="bg-[#C58945] text-white p-6 rounded-3xl shadow-lg">
                             <p className="text-xs opacity-90 font-bold uppercase tracking-wide">A Receber (Pendente)</p>
-                            <p className="text-3xl font-serif font-bold">{formatMoney(orders.reduce((acc, o) => o.status === 'pendente' ? acc + o.value : acc, 0))}</p>
+                            <p className="text-3xl font-serif font-bold">{formatMoney(orders.reduce((acc: number, o: any) => o.status === 'pendente' ? acc + o.value : acc, 0))}</p>
                         </div>
                         <div className="bg-white p-6 rounded-3xl shadow-sm border border-[#E8DED5]">
                             <p className="text-xs text-[#8D6E63] font-bold uppercase tracking-wide">Aniversariantes do Mês</p>
-                            <p className="text-3xl font-serif font-bold text-[#D48C95]">{clients.filter(c => c.birthday && parseInt(c.birthday.split('-')[1]) === new Date().getMonth() + 1).length}</p>
+                            <p className="text-3xl font-serif font-bold text-[#D48C95]">{clients.filter((c: any) => c.birthday && parseInt(c.birthday.split('-')[1]) === new Date().getMonth() + 1).length}</p>
                         </div>
                     </div>
                 </div>
             )}
 
-            {/* --- CALCULADORA & RECEITAS --- */}
+            {/* CALCULADORA & RECEITAS */}
             {view === 'calculator' && (
                 <div className="space-y-8 animate-fade-in">
                     {/* Formulário */}
                     <div className="grid lg:grid-cols-2 gap-8">
                          <div className="bg-white p-6 rounded-3xl shadow-sm border border-[#E8DED5] space-y-4">
                             <div className="flex justify-between items-center mb-2">
-                                <h2 className="text-xl font-bold text-[#4A3630] flex items-center gap-2"><Calculator className="text-[#C58945]"/> {activeRecipe && activeRecipe.id !== 0 ? 'Editar Receita' : 'Nova Precificação'}</h2>
-                                {activeRecipe && activeRecipe.id !== 0 && <button onClick={() => { setActiveRecipe(null); setCurrentRecipe({ id: 0, name: '', yields: 1, time: 60, profit: 30, ingredients: [] }); }} className="text-xs text-[#8D6E63] border px-2 py-1 rounded hover:bg-gray-50">Cancelar Edição</button>}
+                                <h2 className="text-xl font-bold text-[#4A3630] flex items-center gap-2"><Calculator className="text-[#C58945]"/> {activeRecipe || isEditingRecipe ? 'Editar Receita' : 'Nova Precificação'}</h2>
+                                {(activeRecipe || isEditingRecipe) && <button onClick={() => { setActiveRecipe(null); setIsEditingRecipe(false); setCurrentRecipe({ id: 0, name: '', yields: 1, time: 60, profit: 30, ingredients: [] }); }} className="text-xs text-[#8D6E63] border px-2 py-1 rounded hover:bg-gray-50">Cancelar Edição</button>}
                             </div>
                             <div><label className="text-xs font-bold text-[#8D6E63]">NOME DA RECEITA</label><input value={currentRecipe.name} onChange={e => setCurrentRecipe({...currentRecipe, name: e.target.value})} className="w-full p-3 bg-[#FAFAFA] border border-[#E8DED5] rounded-xl font-bold text-[#4A3630]" placeholder="Ex: Bolo de Cenoura"/></div>
                             <div className="grid grid-cols-2 gap-4">
@@ -421,18 +420,18 @@ const App = () => {
                                 <div className="flex justify-between mb-2"><span className="font-bold text-[#4A3630]">Margem de Lucro</span><span className="font-bold text-[#C58945]">{currentRecipe.profit}%</span></div>
                                 <input type="range" min="0" max="300" value={currentRecipe.profit} onChange={e => setCurrentRecipe({...currentRecipe, profit: Number(e.target.value)})} className="w-full accent-[#C58945]"/>
                                 <button onClick={handleSaveRecipe} className="w-full mt-6 bg-[#C58945] text-white p-4 rounded-xl font-bold hover:bg-[#B0783A] transition-colors flex items-center justify-center gap-2 shadow-md">
-                                    <Save size={20}/> {activeRecipe && activeRecipe.id !== 0 ? 'Atualizar Receita' : 'Salvar Receita'}
+                                    <Save size={20}/> {isEditingRecipe ? 'Atualizar Receita' : 'Salvar Receita'}
                                 </button>
                             </div>
                         </div>
                     </div>
 
-                    {/* Lista de Receitas Salvas (Abaixo do Formulário) */}
+                    {/* Lista de Receitas Salvas */}
                     <div>
                         <h3 className="text-2xl font-serif font-bold text-[#4A3630] mb-4">Minhas Receitas Salvas</h3>
                         <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-4">
                             {recipes.length === 0 && <p className="col-span-3 text-center text-[#8D6E63] opacity-50 italic py-8">Nenhuma receita salva ainda.</p>}
-                            {recipes.map(r => {
+                            {recipes.map((r: any) => {
                                 const calc = calculateRecipe(r);
                                 return (
                                     <div key={r.id} className="bg-white p-5 rounded-2xl border border-[#E8DED5] hover:shadow-md transition-all group relative">
@@ -485,11 +484,10 @@ const App = () => {
                     <div className="space-y-6">
                         <h2 className="text-2xl font-serif font-bold text-[#4A3630]">Gerador de Lista</h2>
                         
-                        {/* Seleção de Receitas */}
                         <div className="bg-white p-4 rounded-2xl border border-[#E8DED5]">
                             <h3 className="font-bold text-[#C58945] mb-3 text-sm uppercase">Adicionar Receitas</h3>
                             <div className="space-y-2 max-h-60 overflow-y-auto pr-2">
-                                {recipes.map(r => {
+                                {recipes.map((r: any) => {
                                     const count = shoppingList.find(s => s.type === 'recipe' && s.id === r.id)?.count || 0;
                                     return (
                                         <div key={r.id} className="flex justify-between items-center p-2 border-b border-[#FAFAFA]">
@@ -502,11 +500,9 @@ const App = () => {
                                         </div>
                                     )
                                 })}
-                                {recipes.length === 0 && <p className="text-xs text-gray-400">Nenhuma receita salva.</p>}
                             </div>
                         </div>
 
-                        {/* Seleção de Ingredientes Avulsos */}
                         <div className="bg-white p-4 rounded-2xl border border-[#E8DED5]">
                             <h3 className="font-bold text-[#C58945] mb-3 text-sm uppercase">Adicionar Ingrediente Avulso</h3>
                             <div className="space-y-2 max-h-60 overflow-y-auto pr-2">
@@ -527,7 +523,6 @@ const App = () => {
                         </div>
                     </div>
 
-                    {/* Resultado */}
                     <div className="space-y-4">
                         <div className="flex justify-between items-center">
                             <h3 className="font-bold text-[#4A3630]">Resultado (Ingredientes e Valores)</h3>
@@ -540,122 +535,16 @@ const App = () => {
                 </div>
             )}
 
-            {/* --- 5. CLIENTES --- */}
-            {view === 'clients' && (
-                <div className="animate-fade-in space-y-6">
-                    <h2 className="text-2xl font-serif font-bold text-[#4A3630]">Cadastro de Clientes</h2>
-                    <div className="bg-white p-6 rounded-2xl border border-[#E8DED5] grid md:grid-cols-3 gap-4 items-end shadow-sm">
-                         <div><label className="text-xs font-bold text-[#8D6E63]">Nome</label><input className="w-full p-2 border rounded-lg" value={newClient.name} onChange={e => setNewClient({...newClient, name: e.target.value})}/></div>
-                         <div><label className="text-xs font-bold text-[#8D6E63]">WhatsApp</label><input className="w-full p-2 border rounded-lg" value={newClient.phone} onChange={e => setNewClient({...newClient, phone: e.target.value})}/></div>
-                         <div><label className="text-xs font-bold text-[#8D6E63]">Nascimento</label><input type="date" className="w-full p-2 border rounded-lg" value={newClient.birthday} onChange={e => setNewClient({...newClient, birthday: e.target.value})}/></div>
-                         <button onClick={handleAddClient} className="bg-[#4A3630] text-white p-2 rounded-lg font-bold md:col-span-3">Cadastrar</button>
-                    </div>
-                    <div className="grid md:grid-cols-2 gap-4">
-                        {clients.map(c => (
-                            <div key={c.id} className="bg-white p-4 rounded-xl border border-[#E8DED5] shadow-sm flex justify-between">
-                                <div>
-                                    <p className="font-bold text-[#4A3630] flex items-center gap-2">{c.name} {c.birthday && parseInt(c.birthday.split('-')[1]) === new Date().getMonth() + 1 && <Cake size={14} className="text-[#D48C95]"/>}</p>
-                                    <p className="text-xs text-[#8D6E63]">{c.phone}</p>
-                                </div>
-                                <button onClick={() => setClients(clients.filter(x => x.id !== c.id))} className="text-red-400"><Trash2 size={16}/></button>
-                            </div>
-                        ))}
-                    </div>
-                </div>
-            )}
+            {/* --- CLIENTES, AGENDA, PERFIL, CONFIG, IA (MANTIDOS) --- */}
+            {view === 'clients' && <div className="animate-fade-in space-y-6"><h2 className="text-2xl font-serif font-bold text-[#4A3630]">Cadastro de Clientes</h2><div className="bg-white p-6 rounded-2xl border border-[#E8DED5] grid md:grid-cols-3 gap-4 items-end shadow-sm"><div><label className="text-xs font-bold text-[#8D6E63]">Nome</label><input className="w-full p-2 border rounded-lg" value={newClient.name} onChange={e => setNewClient({...newClient, name: e.target.value})}/></div><div><label className="text-xs font-bold text-[#8D6E63]">WhatsApp</label><input className="w-full p-2 border rounded-lg" value={newClient.phone} onChange={e => setNewClient({...newClient, phone: e.target.value})}/></div><div><label className="text-xs font-bold text-[#8D6E63]">Nascimento</label><input type="date" className="w-full p-2 border rounded-lg" value={newClient.birthday} onChange={e => setNewClient({...newClient, birthday: e.target.value})}/></div><button onClick={handleAddClient} className="bg-[#4A3630] text-white p-2 rounded-lg font-bold md:col-span-3">Cadastrar</button></div><div className="grid md:grid-cols-2 gap-4">{clients.map(c => (<div key={c.id} className="bg-white p-4 rounded-xl border border-[#E8DED5] shadow-sm flex justify-between"><div><p className="font-bold text-[#4A3630] flex items-center gap-2">{c.name} {c.birthday && parseInt(c.birthday.split('-')[1]) === new Date().getMonth() + 1 && <Cake size={14} className="text-[#D48C95]"/>}</p><p className="text-xs text-[#8D6E63]">{c.phone}</p></div><button onClick={() => setClients(clients.filter(x => x.id !== c.id))} className="text-red-400"><Trash2 size={16}/></button></div>))}</div></div>}
+            {view === 'orders' && <div className="animate-fade-in space-y-6"><h2 className="text-2xl font-serif font-bold text-[#4A3630]">Agenda</h2><div className="bg-white p-6 rounded-3xl shadow-sm border border-[#E8DED5]"><div className="grid md:grid-cols-2 lg:grid-cols-4 gap-4"><div><label className="text-xs font-bold text-[#8D6E63]">Cliente</label><select value={newOrder.clientId} onChange={e => setNewOrder({...newOrder, clientId: e.target.value})} className="w-full p-2 border rounded-xl bg-[#FAFAFA]"><option value="">Selecione...</option>{clients.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}</select></div><div><label className="text-xs font-bold text-[#8D6E63]">Data</label><input type="date" value={newOrder.deliveryDate} onChange={e => setNewOrder({...newOrder, deliveryDate: e.target.value})} className="w-full p-2 border rounded-xl bg-[#FAFAFA]"/></div><div><label className="text-xs font-bold text-[#8D6E63]">Valor</label><input type="number" value={newOrder.value} onChange={e => setNewOrder({...newOrder, value: e.target.value})} className="w-full p-2 border rounded-xl bg-[#FAFAFA]"/></div><div className="md:col-span-2 lg:col-span-4"><label className="text-xs font-bold text-[#8D6E63]">Descrição</label><input value={newOrder.items} onChange={e => setNewOrder({...newOrder, items: e.target.value})} className="w-full p-2 border rounded-xl bg-[#FAFAFA]"/></div></div><button onClick={handleAddOrder} className="mt-4 w-full bg-[#C58945] text-white p-3 rounded-xl font-bold hover:bg-[#A06825]">Agendar</button></div><div className="grid md:grid-cols-2 gap-6"><div className="bg-[#FFF3E0] p-6 rounded-3xl border border-[#FFE0B2]"><h3 className="font-bold text-[#C58945] mb-4 flex items-center gap-2"><Clock size={18}/> Pendentes</h3><div className="space-y-3">{orders.filter(o => o.status === 'pendente').map(o => (<div key={o.id} className="bg-white p-4 rounded-xl shadow-sm border border-[#FFE0B2]"><div className="flex justify-between items-start mb-2"><div><div className="font-bold text-[#4A3630]">{o.clientName}</div><div className="text-xs text-[#8D6E63]">{o.deliveryDate.split('-').reverse().join('/')}</div></div><div className="text-lg font-bold text-[#C58945]">{formatMoney(o.value)}</div></div><button onClick={() => confirmPayment(o.id)} className="text-xs bg-[#4ADE80] text-[#064E3B] px-3 py-2 rounded-lg font-bold w-full flex justify-center gap-1"><Check size={12}/> Pagar</button></div>))}</div></div><div className="bg-[#E7F7EE] p-6 rounded-3xl border border-[#C8E6C9]"><h3 className="font-bold text-[#2E7D32] mb-4 flex items-center gap-2"><Check size={18}/> Pagos</h3><div className="space-y-3 opacity-70">{orders.filter(o => o.status === 'pago' || o.status === 'entregue').map(o => (<div key={o.id} className="bg-white p-4 rounded-xl shadow-sm border border-[#C8E6C9] flex justify-between"><span className="font-bold text-[#4A3630]">{o.clientName}</span><span className="font-bold text-[#2E7D32]">{formatMoney(o.value)}</span></div>))}</div></div></div></div>}
+            {view === 'profile' && <div className="animate-fade-in space-y-6"><h2 className="text-2xl font-serif font-bold text-[#4A3630] flex items-center gap-2"><User className="text-[#C58945]"/> Minha Empresa</h2><div className="bg-white p-8 rounded-3xl shadow-sm border border-[#E8DED5] max-w-2xl"><div className="space-y-4"><div><label className="text-xs font-bold text-[#8D6E63] uppercase">Nome da Confeitaria</label><input value={companyProfile.businessName} onChange={e => setCompanyProfile({...companyProfile, businessName: e.target.value})} className="w-full p-3 bg-[#FAFAFA] border border-[#E8DED5] rounded-xl mt-1"/></div><div><label className="text-xs font-bold text-[#8D6E63] uppercase">Seu Nome (Chef)</label><input value={companyProfile.chefName} onChange={e => setCompanyProfile({...companyProfile, chefName: e.target.value})} className="w-full p-3 bg-[#FAFAFA] border border-[#E8DED5] rounded-xl mt-1"/></div><div><label className="text-xs font-bold text-[#8D6E63] uppercase">CNPJ</label><input value={companyProfile.cnpj} onChange={e => setCompanyProfile({...companyProfile, cnpj: e.target.value})} className="w-full p-3 bg-[#FAFAFA] border border-[#E8DED5] rounded-xl mt-1"/></div></div><button onClick={() => alert('Salvo!')} className="w-full mt-6 bg-[#4A3630] text-white p-4 rounded-xl font-bold hover:bg-[#382823]">Salvar Perfil</button></div></div>}
+            {view === 'config' && <div className="bg-white p-8 rounded-3xl shadow-sm border border-[#E8DED5] animate-fade-in max-w-2xl mx-auto"><h2 className="text-xl font-bold text-gray-800 mb-6">Ajustes</h2><div className="grid md:grid-cols-2 gap-6"><div><label className="block text-xs font-bold text-[#8D6E63] uppercase mb-1">Salário</label><input type="number" value={config.salary} onChange={e => setConfig({...config, salary: e.target.value})} className="w-full p-3 bg-[#FAFAFA] border border-[#E8DED5] rounded-xl" /></div><div><label className="block text-xs font-bold text-[#8D6E63] uppercase mb-1">Custos Fixos</label><input type="number" value={config.costs} onChange={e => setConfig({...config, costs: e.target.value})} className="w-full p-3 bg-[#FAFAFA] border border-[#E8DED5] rounded-xl" /></div><div><label className="block text-xs font-bold text-[#8D6E63] uppercase mb-1">Horas/Dia</label><input type="number" value={config.hours} onChange={e => setConfig({...config, hours: e.target.value})} className="w-full p-3 bg-[#FAFAFA] border border-[#E8DED5] rounded-xl" /></div><div><label className="block text-xs font-bold text-[#8D6E63] uppercase mb-1">Dias/Semana</label><input type="number" value={config.days} onChange={e => setConfig({...config, days: e.target.value})} className="w-full p-3 bg-[#FAFAFA] border border-[#E8DED5] rounded-xl" /></div></div></div>}
+            {view === 'ai' && <div className="animate-fade-in"><div className="bg-white p-8 rounded-3xl text-center border border-[#E8DED5]"><Sparkles className="mx-auto mb-4 text-[#C58945]" size={40}/><h2 className="text-2xl font-bold mb-2">Marketing IA</h2><div className="space-y-4 text-left"><textarea className="w-full p-4 border rounded-xl" rows={3} placeholder="Sobre o que é o post?" value={aiPrompt} onChange={e => setAiPrompt(e.target.value)}/><button onClick={() => { setIsAiLoading(true); setTimeout(() => { setAiResponse("✨ Legenda gerada com sucesso!"); setIsAiLoading(false); }, 1500); }} className="w-full bg-[#4A3630] text-white p-4 rounded-xl font-bold">{isAiLoading ? 'Criando...' : 'Gerar Legenda'}</button></div>{aiResponse && <div className="mt-6 p-4 bg-[#FDF6F0] rounded-xl text-left relative"><p>{aiResponse}</p><button onClick={() => navigator.clipboard.writeText(aiResponse)} className="absolute top-2 right-2"><Copy size={16}/></button></div>}</div></div>}
 
-            {/* --- 6. AGENDA --- */}
-            {view === 'orders' && (
-                <div className="animate-fade-in space-y-6">
-                     <h2 className="text-2xl font-serif font-bold text-[#4A3630]">Agenda</h2>
-                     <div className="bg-white p-6 rounded-3xl shadow-sm border border-[#E8DED5]">
-                         <h3 className="font-bold mb-4 text-[#8D6E63] uppercase text-xs">Novo Pedido</h3>
-                         <div className="grid md:grid-cols-2 lg:grid-cols-4 gap-4">
-                             <div>
-                                 <label className="text-xs font-bold text-[#8D6E63]">Cliente</label>
-                                 <select value={newOrder.clientId} onChange={e => setNewOrder({...newOrder, clientId: e.target.value})} className="w-full p-2 border rounded-xl bg-[#FAFAFA] cursor-pointer">
-                                     <option value="">Selecione...</option>
-                                     {clients.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
-                                 </select>
-                             </div>
-                             <div><label className="text-xs font-bold text-[#8D6E63]">Data</label><input type="date" value={newOrder.deliveryDate} onChange={e => setNewOrder({...newOrder, deliveryDate: e.target.value})} className="w-full p-2 border rounded-xl bg-[#FAFAFA]"/></div>
-                             <div><label className="text-xs font-bold text-[#8D6E63]">Valor</label><input type="number" value={newOrder.value} onChange={e => setNewOrder({...newOrder, value: e.target.value})} className="w-full p-2 border rounded-xl bg-[#FAFAFA]"/></div>
-                             <div className="md:col-span-2 lg:col-span-4"><label className="text-xs font-bold text-[#8D6E63]">Descrição</label><input value={newOrder.items} onChange={e => setNewOrder({...newOrder, items: e.target.value})} className="w-full p-2 border rounded-xl bg-[#FAFAFA]"/></div>
-                         </div>
-                         <button onClick={handleAddOrder} className="mt-4 w-full bg-[#C58945] text-white p-3 rounded-xl font-bold hover:bg-[#A06825]">Agendar Pedido</button>
-                     </div>
-                     <div className="grid md:grid-cols-2 gap-6">
-                        <div className="bg-[#FFF3E0] p-6 rounded-3xl border border-[#FFE0B2]">
-                            <h3 className="font-bold text-[#C58945] mb-4 flex items-center gap-2"><Clock size={18}/> Pendentes</h3>
-                            <div className="space-y-3">
-                                {orders.filter(o => o.status === 'pendente').map(o => (
-                                    <div key={o.id} className="bg-white p-4 rounded-xl shadow-sm border border-[#FFE0B2]">
-                                        <div className="flex justify-between items-start mb-2">
-                                            <div><div className="font-bold text-[#4A3630]">{o.clientName}</div><div className="text-xs text-[#8D6E63]">{o.deliveryDate.split('-').reverse().join('/')}</div></div>
-                                            <div className="text-lg font-bold text-[#C58945]">{formatMoney(o.value)}</div>
-                                        </div>
-                                        <button onClick={() => confirmPayment(o.id)} className="text-xs bg-[#4ADE80] text-[#064E3B] px-3 py-2 rounded-lg font-bold w-full flex justify-center gap-1"><Check size={12}/> Pagar</button>
-                                    </div>
-                                ))}
-                            </div>
-                        </div>
-                        <div className="bg-[#E7F7EE] p-6 rounded-3xl border border-[#C8E6C9]">
-                            <h3 className="font-bold text-[#2E7D32] mb-4 flex items-center gap-2"><Check size={18}/> Pagos</h3>
-                            <div className="space-y-3 opacity-70">
-                                 {orders.filter(o => o.status === 'pago' || o.status === 'entregue').map(o => (
-                                    <div key={o.id} className="bg-white p-4 rounded-xl shadow-sm border border-[#C8E6C9] flex justify-between">
-                                        <span className="font-bold text-[#4A3630]">{o.clientName}</span>
-                                        <span className="font-bold text-[#2E7D32]">{formatMoney(o.value)}</span>
-                                    </div>
-                                ))}
-                            </div>
-                        </div>
-                     </div>
-                </div>
-            )}
-
-            {/* --- 7. CONFIGURAÇÕES --- */}
-            {view === 'config' && (
-                 <div className="bg-white p-8 rounded-3xl shadow-sm border border-[#E8DED5] animate-fade-in max-w-2xl mx-auto">
-                    <h2 className="text-xl font-bold text-gray-800 flex items-center gap-2 mb-6"><Settings className="text-[#C58945]"/> Ajustes</h2>
-                    <div className="grid md:grid-cols-2 gap-6">
-                        <div><label className="block text-xs font-bold text-[#8D6E63] uppercase mb-1">Salário (R$)</label><input type="number" value={config.salary} onChange={e => setConfig({...config, salary: e.target.value})} className="w-full p-3 bg-[#FAFAFA] border border-[#E8DED5] rounded-xl" /></div>
-                        <div><label className="block text-xs font-bold text-[#8D6E63] uppercase mb-1">Custos Fixos (R$)</label><input type="number" value={config.costs} onChange={e => setConfig({...config, costs: e.target.value})} className="w-full p-3 bg-[#FAFAFA] border border-[#E8DED5] rounded-xl" /></div>
-                        <div><label className="block text-xs font-bold text-[#8D6E63] uppercase mb-1">Horas/Dia</label><input type="number" value={config.hours} onChange={e => setConfig({...config, hours: e.target.value})} className="w-full p-3 bg-[#FAFAFA] border border-[#E8DED5] rounded-xl" /></div>
-                        <div><label className="block text-xs font-bold text-[#8D6E63] uppercase mb-1">Dias/Semana</label><input type="number" value={config.days} onChange={e => setConfig({...config, days: e.target.value})} className="w-full p-3 bg-[#FAFAFA] border border-[#E8DED5] rounded-xl" /></div>
-                    </div>
-                </div>
-            )}
-
-            {/* --- 8. PERFIL --- */}
-            {view === 'profile' && (
-                <div className="animate-fade-in space-y-6">
-                    <h2 className="text-2xl font-serif font-bold text-[#4A3630] flex items-center gap-2"><User className="text-[#C58945]"/> Minha Empresa</h2>
-                    <div className="bg-white p-8 rounded-3xl shadow-sm border border-[#E8DED5] max-w-2xl">
-                        <div className="space-y-4">
-                            <div><label className="text-xs font-bold text-[#8D6E63] uppercase">Nome da Confeitaria</label><input value={companyProfile.businessName} onChange={e => setCompanyProfile({...companyProfile, businessName: e.target.value})} className="w-full p-3 bg-[#FAFAFA] border border-[#E8DED5] rounded-xl mt-1"/></div>
-                            <div><label className="text-xs font-bold text-[#8D6E63] uppercase">Seu Nome (Chef)</label><input value={companyProfile.chefName} onChange={e => setCompanyProfile({...companyProfile, chefName: e.target.value})} className="w-full p-3 bg-[#FAFAFA] border border-[#E8DED5] rounded-xl mt-1"/></div>
-                            <div><label className="text-xs font-bold text-[#8D6E63] uppercase">CNPJ</label><input value={companyProfile.cnpj} onChange={e => setCompanyProfile({...companyProfile, cnpj: e.target.value})} className="w-full p-3 bg-[#FAFAFA] border border-[#E8DED5] rounded-xl mt-1"/></div>
-                        </div>
-                        <button onClick={() => alert('Dados salvos com sucesso!')} className="w-full mt-6 bg-[#4A3630] text-white p-4 rounded-xl font-bold hover:bg-[#382823]">Salvar Perfil</button>
-                    </div>
-                </div>
-            )}
-
-            {/* --- 9. MARKETING IA --- */}
-            {view === 'ai' && (
-                <div className="max-w-2xl mx-auto animate-fade-in">
-                    <div className="bg-white p-8 rounded-3xl shadow-sm border border-[#E8DED5] text-center">
-                        <div className="bg-gradient-to-r from-[#C58945] to-[#D48C95] w-16 h-16 rounded-2xl flex items-center justify-center mx-auto mb-6 text-white shadow-lg"><Sparkles size={32} /></div>
-                        <h2 className="text-2xl font-serif font-bold mb-2">Assistente de Marketing</h2>
-                        <div className="space-y-4 text-left"><label className="text-xs font-bold uppercase text-[#8D6E63]">Sobre o que é o post?</label><textarea className="w-full p-4 bg-[#FAFAFA] border border-[#E8DED5] rounded-xl focus:outline-none focus:border-[#C58945]" rows={3} placeholder="Ex: Fiz um bolo de cenoura com brigadeiro belga..." value={aiPrompt} onChange={e => setAiPrompt(e.target.value)} /><button onClick={() => { setIsAiLoading(true); setTimeout(() => { setAiResponse("✨ Legenda gerada com sucesso!"); setIsAiLoading(false); }, 1500); }} className="w-full bg-[#4A3630] text-white p-4 rounded-xl font-bold">{isAiLoading ? 'Criando...' : 'Gerar Legenda'}</button></div>
-                        {aiResponse && <div className="mt-6 p-4 bg-[#FDF6F0] rounded-xl text-left relative"><p>{aiResponse}</p><button onClick={() => navigator.clipboard.writeText(aiResponse)} className="absolute top-2 right-2"><Copy size={16}/></button></div>}
-                    </div>
-                </div>
-            )}
         </div>
       </div>
-      <style>{@import url('https://fonts.googleapis.com/css2?family=Playfair+Display:wght@700&family=Lato:wght@400;700&display=swap'); .font-serif { font-family: 'Playfair Display', serif; } .font-sans { font-family: 'Lato', sans-serif; } .animate-fade-in { animation: fadeIn 0.3s ease-out; } @keyframes fadeIn { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: translateY(0); } }}</style>
+      <style>{`@import url('https://fonts.googleapis.com/css2?family=Playfair+Display:wght@700&family=Lato:wght@400;700&display=swap'); .font-serif { font-family: 'Playfair Display', serif; } .font-sans { font-family: 'Lato', sans-serif; } .animate-fade-in { animation: fadeIn 0.3s ease-out; } @keyframes fadeIn { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: translateY(0); } }`}</style>
     </div>
   );
 };
