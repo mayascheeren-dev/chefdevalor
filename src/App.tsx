@@ -1,6 +1,7 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { initializeApp } from "firebase/app";
 import { getAuth, signInWithEmailAndPassword, signOut, onAuthStateChanged } from "firebase/auth";
+// IMPORTAÇÃO COMPLETA DOS ÍCONES
 import { 
   Calculator, Settings, Plus, Trash2, Package, Clock, ChefHat, 
   Sparkles, ShoppingCart, Calendar, TrendingUp, LogOut, Copy, Check, Menu, X, 
@@ -18,7 +19,6 @@ const firebaseConfig = {
   measurementId: "G-JR8Z43E95X"
 };
 
-// Inicializa Firebase
 const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 
