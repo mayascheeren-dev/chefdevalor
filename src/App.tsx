@@ -1,11 +1,12 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect } from 'react';
 import { initializeApp } from "firebase/app";
 import { getAuth, signInWithEmailAndPassword, signOut, onAuthStateChanged } from "firebase/auth";
-// IMPORTAÇÃO COMPLETA DOS ÍCONES
+
+// --- IMPORTAÇÃO DE ÍCONES CORRIGIDA (TODOS INCLUÍDOS) ---
 import { 
   Calculator, Settings, Plus, Trash2, Package, Clock, ChefHat, 
-  Sparkles, ShoppingCart, Calendar, TrendingUp, LogOut, Copy, Check, Menu, X, 
-  Save, Edit, Users, Cake, Phone, User, AlertCircle, ChevronRight
+  Sparkles, ShoppingCart, Calendar, TrendingUp, LogOut, Copy, Check, 
+  Menu, X, Save, Edit, Users, Cake, Phone, User, AlertCircle, ChevronRight, DollarSign
 } from 'lucide-react';
 
 // --- 🔒 CONFIGURAÇÃO DO FIREBASE ---
@@ -116,7 +117,7 @@ const App = () => {
       e.preventDefault(); 
       setLoginError('');
       try { await signInWithEmailAndPassword(auth, email, password); } 
-      catch (e) { setLoginError("Dados incorretos. Verifique e-mail e senha."); } 
+      catch (e) { setLoginError("Dados incorretos."); } 
   };
 
   const handleDeleteIngredient = (id: number) => {
