@@ -1,0 +1,655 @@
+import React, { useState, useEffect, useMemo } from 'react';
+import { initializeApp } from "firebase/app";
+import { getAuth, signInWithEmailAndPassword, signOut, onAuthStateChanged } from "firebase/auth";
+import { 
+  Calculator, Settings, Plus, Trash2, Package, Clock, ChefHat, 
+  Sparkles, ShoppingCart, Calendar, TrendingUp, LogOut, Copy, Check, Menu, X, Save, Edit, Users, Cake, Phone, AlertCircle, ChevronRight, User
+} from 'lucide-react';
+
+// --- 🔒 CONFIGURAÇÃO DO FIREBASE ---
+const firebaseConfig = {
+  apiKey: "AIzaSyBvHMHh6jkinWx4K1bKii2eI4SoGkAyqFo",
+  authDomain: "chef-de-valor.firebaseapp.com",
+  projectId: "chef-de-valor",
+  storageBucket: "chef-de-valor.firebasestorage.app",
+  messagingSenderId: "401607199442",
+  appId: "1:401607199442:web:eed83f4608c5db05d5fb0b",
+  measurementId: "G-JR8Z43E95X"
+};
+
+const app = initializeApp(firebaseConfig);
+const auth = getAuth(app);
+
+// --- TIPOS ---
+interface Ingredient { id: number; name: string; packageWeight: number; cost: number; }
+interface Recipe { id: number; name: string; yields: number; time: number; profit: number; ingredients: {id: number, qty: number}[] }
+interface Client { id: number; name: string; phone: string; birthday: string; }
+interface Order { 
+  id: number; 
+  clientId: number; 
+  clientName: string; 
+  deliveryDate: string; 
+  items: string; 
+  value: number; 
+  paymentMethod: string;
+  status: 'pendente' | 'pago' | 'entregue'; 
+}
+interface CompanyProfile {
+    businessName: string;
+    chefName: string;
+    cnpj: string;
+}
+
+// --- DADOS INICIAIS ---
+const initialIngredients: Ingredient[] = [
+  { id: 1, name: 'Leite Condensado', packageWeight: 395, cost: 5.50 },
+  { id: 2, name: 'Creme de Leite', packageWeight: 200, cost: 3.20 },
+  { id: 3, name: 'Chocolate 50%', packageWeight: 1000, cost: 35.00 },
+  { id: 4, name: 'Manteiga', packageWeight: 200, cost: 12.00 },
+];
+
+const App = () => {
+  // --- ESTADOS GERAIS ---
+  const [user, setUser] = useState<any>(null);
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [view, setView] = useState('dashboard');
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const [loadingAuth, setLoadingAuth] = useState(true);
+  const [loginError, setLoginError] = useState('');
+  
+  // --- PERSISTÊNCIA (LOCAL STORAGE) ---
+  const [config, setConfig] = useState(() => JSON.parse(localStorage.getItem('cv_config') || '{"salary":3000,"costs":800,"hours":8,"days":5}'));
+  const [dbIngredients, setDbIngredients] = useState<Ingredient[]>(() => JSON.parse(localStorage.getItem('cv_ingredients') || JSON.stringify(initialIngredients)));
+  const [recipes, setRecipes] = useState<Recipe[]>(() => JSON.parse(localStorage.getItem('cv_recipes') || '[]'));
+  const [clients, setClients] = useState<Client[]>(() => JSON.parse(localStorage.getItem('cv_clients') || '[]'));
+  const [orders, setOrders] = useState<Order[]>(() => JSON.parse(localStorage.getItem('cv_orders') || '[]'));
+  const [companyProfile, setCompanyProfile] = useState<CompanyProfile>(() => JSON.parse(localStorage.getItem('cv_profile') || '{"businessName":"","chefName":"","cnpj":""}'));
+
+  // --- ESTADOS DE FORMULÁRIOS ---
+  const [activeRecipe, setActiveRecipe] = useState<Recipe | null>(null); 
+  const [newIngredient, setNewIngredient] = useState({ name: '', packageWeight: '', cost: '' });
+  const [editingIngredient, setEditingIngredient] = useState<Ingredient | null>(null);
+  const [newOrder, setNewOrder] = useState({ clientId: '', deliveryDate: '', items: '', value: '', paymentMethod: 'Pix' });
+  const [newClient, setNewClient] = useState({ name: '', phone: '', birthday: '' });
+  const [aiPrompt, setAiPrompt] = useState('');
+  const [aiResponse, setAiResponse] = useState('');
+  const [isAiLoading, setIsAiLoading] = useState(false);
+  const [shoppingList, setShoppingList] = useState<{recipeId: number, count: number}[]>([]);
+
+  // Salvar dados automaticamente
+  useEffect(() => { localStorage.setItem('cv_config', JSON.stringify(config)); }, [config]);
+  useEffect(() => { localStorage.setItem('cv_ingredients', JSON.stringify(dbIngredients)); }, [dbIngredients]);
+  useEffect(() => { localStorage.setItem('cv_recipes', JSON.stringify(recipes)); }, [recipes]);
+  useEffect(() => { localStorage.setItem('cv_clients', JSON.stringify(clients)); }, [clients]);
+  useEffect(() => { localStorage.setItem('cv_orders', JSON.stringify(orders)); }, [orders]);
+  useEffect(() => { localStorage.setItem('cv_profile', JSON.stringify(companyProfile)); }, [companyProfile]);
+  
+  // Autenticação Rápida
+  useEffect(() => {
+    const unsub = onAuthStateChanged(auth, (u) => { setUser(u); setLoadingAuth(false); });
+    return () => unsub();
+  }, []);
+
+  // --- LÓGICA DE NEGÓCIO ---
+  const formatMoney = (v: number) => v.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
+  
+  const getHourlyRate = () => {
+    const totalHours = parseFloat(config.hours) * parseFloat(config.days) * 4.28;
+    const totalCost = parseFloat(config.salary) + parseFloat(config.costs);
+    return totalHours ? totalCost / totalHours : 0;
+  };
+
+  const calculateRecipe = (rec: Recipe) => {
+    let matCost = 0;
+    rec.ingredients.forEach((i) => {
+      const ing = dbIngredients.find(d => d.id === i.id);
+      if (ing) matCost += (ing.cost / ing.packageWeight) * i.qty;
+    });
+    const varCost = matCost * 0.10; // 10%
+    const laborCost = (rec.time / 60) * getHourlyRate();
+    const totalCost = matCost + varCost + laborCost;
+    const finalPrice = totalCost * (1 + (rec.profit / 100));
+    return { totalCost, finalPrice, unitPrice: finalPrice / (rec.yields || 1) };
+  };
+
+  // --- AÇÕES ---
+  const handleLogin = async (e: any) => { 
+      e.preventDefault(); 
+      setLoginError('');
+      try { await signInWithEmailAndPassword(auth, email, password); } 
+      catch (e) { setLoginError("Dados incorretos. Tente novamente."); } 
+  };
+
+  const handleDeleteIngredient = (id: number) => {
+      const isUsed = recipes.some(r => r.ingredients.some(i => i.id === id));
+      if(isUsed && !window.confirm("Este ingrediente é usado em receitas. Se apagar, o custo das receitas ficará errado. Continuar?")) return;
+      if(!isUsed && !window.confirm("Apagar ingrediente?")) return;
+      setDbIngredients(dbIngredients.filter(i => i.id !== id));
+  };
+
+  const handleSaveRecipe = () => {
+      if (!activeRecipe?.name) return alert("Dê um nome para a receita!");
+      
+      const existingIndex = recipes.findIndex(r => r.id === activeRecipe.id);
+      let newRecipes = [...recipes];
+      
+      if (existingIndex >= 0) {
+          newRecipes[existingIndex] = activeRecipe;
+          alert("Receita atualizada!");
+      } else {
+          newRecipes.push({...activeRecipe, id: Date.now()});
+          alert("Nova receita criada!");
+      }
+      setRecipes(newRecipes);
+      setActiveRecipe(null); 
+  };
+  
+  const handleDeleteRecipe = (id: number) => {
+      if(window.confirm("Tem certeza que deseja excluir esta receita?")) {
+          setRecipes(recipes.filter(r => r.id !== id));
+      }
+  }
+
+  const handleAddIngredient = () => {
+    if (newIngredient.name && newIngredient.cost) {
+        setDbIngredients([...dbIngredients, { id: Date.now(), name: newIngredient.name, packageWeight: Number(newIngredient.packageWeight), cost: Number(newIngredient.cost) }]);
+        setNewIngredient({ name: '', packageWeight: '', cost: '' });
+    }
+  };
+
+  const handleUpdateIngredient = (updatedIng: Ingredient) => {
+    setDbIngredients(dbIngredients.map(ing => ing.id === updatedIng.id ? updatedIng : ing));
+    setEditingIngredient(null);
+  };
+
+  const handleAddClient = () => {
+    if (newClient.name) {
+        setClients([...clients, { id: Date.now(), ...newClient }]);
+        setNewClient({ name: '', phone: '', birthday: '' });
+        alert('Cliente cadastrado com sucesso!');
+    }
+  };
+
+  const handleAddOrder = () => {
+      if (newOrder.clientId && newOrder.value) {
+          const client = clients.find(c => c.id === Number(newOrder.clientId));
+          setOrders([...orders, {
+              id: Date.now(),
+              clientId: Number(newOrder.clientId),
+              clientName: client ? client.name : 'Desconhecido',
+              deliveryDate: newOrder.deliveryDate,
+              items: newOrder.items,
+              value: Number(newOrder.value),
+              paymentMethod: newOrder.paymentMethod,
+              status: 'pendente'
+          }]);
+          setNewOrder({ clientId: '', deliveryDate: '', items: '', value: '', paymentMethod: 'Pix' });
+          alert('Pedido agendado!');
+      } else {
+          alert("Selecione um cliente e informe o valor.");
+      }
+  };
+
+  const confirmPayment = (orderId: number) => {
+      if(window.confirm("Confirmar recebimento do pagamento?")) {
+          setOrders(orders.map(o => o.id === orderId ? {...o, status: 'pago'} : o));
+      }
+  };
+
+  const handleAiGenerate = async () => {
+    setIsAiLoading(true);
+    setTimeout(() => {
+        setAiResponse(✨ **Sugestão de Legenda:**\n\n"Atenção formiguinhas! 🐜\n\nO nosso ${aiPrompt || 'doce'} acabou de sair da produção e está imperdível. Feito com ingredientes premium para adoçar sua semana.\n\n📲 Peça pelo link na bio!\n#${companyProfile.businessName?.replace(/\s/g, '') || 'ConfeitariaArtesanal'} #ChefDeValor");
+        setIsAiLoading(false);
+    }, 2000);
+  };
+
+  const generateShoppingListText = () => {
+    const totals: Record<string, {qty: number, cost: number}> = {};
+    let estimatedTotal = 0;
+
+    shoppingList.forEach(item => {
+        if (item.count > 0) {
+            const rec = recipes.find(r => r.id === item.recipeId);
+            rec?.ingredients.forEach(ing => {
+                const dbIng = dbIngredients.find(d => d.id === ing.id);
+                if (dbIng) {
+                    const totalQty = ing.qty * item.count;
+                    const estimatedCost = (dbIng.cost / dbIng.packageWeight) * totalQty;
+                    
+                    if (!totals[dbIng.name]) totals[dbIng.name] = {qty: 0, cost: 0};
+                    totals[dbIng.name].qty += totalQty;
+                    totals[dbIng.name].cost += estimatedCost;
+                    estimatedTotal += estimatedCost;
+                }
+            });
+        }
+    });
+
+    let text = *🛒 Lista de Compras - ${companyProfile.businessName || 'Chef de Valor'}*\n\n;
+    Object.entries(totals).forEach(([name, data]) => {
+        text += ▫ ${name}: ${data.qty.toFixed(0)}g (~${formatMoney(data.cost)})\n;
+    });
+    text += \n*💰 Previsão de Custo Total: ${formatMoney(estimatedTotal)}*;
+    return text;
+  };
+
+  // --- RENDERIZAÇÃO ---
+
+  if (loadingAuth) return <div className="min-h-screen flex items-center justify-center bg-[#FDF6F0] text-[#C58945] font-bold">Carregando sistema...</div>;
+
+  if (!user) {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-[#FDF6F0] p-6 font-serif">
+        <div className="w-full max-w-md bg-white p-8 rounded-3xl shadow-xl border border-[#E8DED5]">
+          <div className="text-center mb-8">
+            <div className="bg-[#4A3630] text-white w-16 h-16 rounded-full flex items-center justify-center mx-auto mb-4 shadow-lg"><ChefHat size={32} /></div>
+            <h1 className="text-3xl font-bold text-[#4A3630]">Chef de Valor</h1>
+            <p className="text-[#8D6E63]">Login Seguro</p>
+          </div>
+          <form onSubmit={handleLogin} className="space-y-4">
+            <input type="email" placeholder="E-mail" value={email} onChange={e => setEmail(e.target.value)} className="w-full p-4 bg-[#FAFAFA] border border-[#E8DED5] rounded-xl text-[#4A3630]" required />
+            <input type="password" placeholder="Senha" value={password} onChange={e => setPassword(e.target.value)} className="w-full p-4 bg-[#FAFAFA] border border-[#E8DED5] rounded-xl text-[#4A3630]" required />
+            {loginError && <p className="text-red-500 text-sm text-center">{loginError}</p>}
+            <button type="submit" className="w-full bg-[#4A3630] text-white p-4 rounded-xl font-bold hover:bg-[#382823] transition-colors">ENTRAR AGORA</button>
+          </form>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="min-h-screen bg-[#FDF6F0] font-sans text-[#4A3630] flex flex-col md:flex-row">
+       
+       {/* MODAL EDIÇÃO INGREDIENTE */}
+       {editingIngredient && (
+          <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+              <div className="bg-white p-6 rounded-2xl shadow-2xl w-full max-w-md border border-[#E8DED5]">
+                  <h3 className="text-xl font-bold mb-4">Editar: {editingIngredient.name}</h3>
+                  <div className="space-y-4">
+                      <div><label className="text-xs font-bold uppercase text-[#8D6E63]">Preço Pago (R$)</label><input type="number" value={editingIngredient.cost} onChange={e => setEditingIngredient({...editingIngredient, cost: Number(e.target.value)})} className="w-full p-2 border rounded-lg" /></div>
+                      <div><label className="text-xs font-bold uppercase text-[#8D6E63]">Peso (g)</label><input type="number" value={editingIngredient.packageWeight} onChange={e => setEditingIngredient({...editingIngredient, packageWeight: Number(e.target.value)})} className="w-full p-2 border rounded-lg" /></div>
+                  </div>
+                  <div className="mt-6 flex justify-end gap-3">
+                      <button onClick={() => setEditingIngredient(null)} className="bg-gray-200 text-gray-700 px-4 py-2 rounded-xl">Cancelar</button>
+                      <button onClick={() => handleUpdateIngredient(editingIngredient)} className="bg-[#C58945] text-white px-4 py-2 rounded-xl">Salvar</button>
+                  </div>
+              </div>
+          </div>
+      )}
+
+      {/* SIDEBAR */}
+      <div className={fixed inset-y-0 left-0 z-40 w-64 bg-[#4A3630] text-[#FDF6F0] transform ${mobileMenuOpen ? 'translate-x-0' : '-translate-x-full'} md:translate-x-0 transition-transform duration-300 shadow-2xl flex flex-col}>
+        <div className="p-6 border-b border-[#5D443C]">
+            <h1 className="font-serif text-xl font-bold text-[#C58945] truncate">
+                {companyProfile.businessName || 'Chef de Valor'}
+            </h1>
+            <p className="text-xs opacity-70 truncate">
+                Olá, {companyProfile.chefName || 'Chef'}!
+            </p>
+            <button onClick={() => setMobileMenuOpen(false)} className="absolute top-4 right-4 md:hidden"><X/></button>
+        </div>
+
+        <nav className="flex-1 overflow-y-auto py-4 px-3 space-y-1">
+            {[
+                { id: 'dashboard', label: 'Visão Geral', icon: TrendingUp },
+                { id: 'profile', label: 'Minha Empresa', icon: User },
+                { id: 'recipes', label: 'Minhas Receitas', icon: Calculator },
+                { id: 'ingredients', label: 'Minha Despensa', icon: Package },
+                { id: 'shopping', label: 'Lista de Compras', icon: ShoppingCart },
+                { id: 'orders', label: 'Agenda de Pedidos', icon: Calendar },
+                { id: 'clients', label: 'Clientes', icon: Users },
+                { id: 'config', label: 'Configurações', icon: Settings },
+            ].map(item => (
+                <button key={item.id} onClick={() => { setView(item.id); setMobileMenuOpen(false); setActiveRecipe(null); }} className={w-full flex items-center gap-3 p-3 rounded-xl transition-all ${view === item.id ? 'bg-[#C58945] text-white shadow-md' : 'hover:bg-[#5D443C] text-[#E8DED5]'}}>
+                    <item.icon size={18} /> <span className="font-medium">{item.label}</span>
+                </button>
+            ))}
+        </nav>
+        <div className="p-4 border-t border-[#5D443C]">
+            <button onClick={() => signOut(auth)} className="w-full flex items-center justify-center gap-2 text-[#D48C95] hover:text-white transition-colors text-sm font-bold py-2"><LogOut size={16} /> Sair</button>
+        </div>
+      </div>
+
+      {/* ÁREA PRINCIPAL */}
+      <div className="flex-1 md:ml-64 min-h-screen flex flex-col">
+        <div className="md:hidden bg-white p-4 flex justify-between items-center shadow-sm sticky top-0 z-30">
+            <button onClick={() => setMobileMenuOpen(true)} className="text-[#4A3630]"><Menu/></button>
+            <span className="font-serif font-bold text-[#C58945] truncate ml-2">{companyProfile.businessName || 'Chef de Valor'}</span>
+            <div className="w-6"></div>
+        </div>
+
+        <div className="p-4 md:p-8 max-w-6xl mx-auto w-full">
+
+            {/* --- 1. DASHBOARD --- */}
+            {view === 'dashboard' && (
+                <div className="space-y-6 animate-fade-in">
+                    <h2 className="text-3xl font-serif font-bold text-[#4A3630]">Olá, {companyProfile.chefName || 'Chef'}! 👋</h2>
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+                        <div className="bg-white p-6 rounded-3xl shadow-sm border border-[#E8DED5]">
+                            <p className="text-sm text-[#8D6E63] font-bold uppercase">Faturamento (Mês)</p>
+                            <p className="text-3xl font-serif font-bold text-[#2E7D32]">{formatMoney(orders.reduce((acc, o) => o.status === 'pago' ? acc + o.value : acc, 0))}</p>
+                        </div>
+                        <div className="bg-[#C58945] text-white p-6 rounded-3xl shadow-lg">
+                            <p className="text-sm opacity-90 font-bold uppercase">A Receber</p>
+                            <p className="text-3xl font-serif font-bold">{formatMoney(orders.reduce((acc, o) => o.status === 'pendente' ? acc + o.value : acc, 0))}</p>
+                        </div>
+                        <div className="bg-white p-6 rounded-3xl shadow-sm border border-[#E8DED5]">
+                            <p className="text-sm text-[#8D6E63] font-bold uppercase">Aniversariantes do Mês</p>
+                            <p className="text-3xl font-serif font-bold text-[#D48C95]">{clients.filter(c => c.birthday && parseInt(c.birthday.split('-')[1]) === new Date().getMonth() + 1).length}</p>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {/* --- 2. RECEITAS --- */}
+            {view === 'recipes' && (
+                <div className="space-y-6 animate-fade-in">
+                    {!activeRecipe ? (
+                        <>
+                            <div className="flex justify-between items-center">
+                                <h2 className="text-2xl font-serif font-bold text-[#4A3630]">Minhas Receitas</h2>
+                                <button 
+                                    onClick={() => setActiveRecipe({ id: 0, name: 'Nova Receita', yields: 1, time: 60, profit: 30, ingredients: [] })} 
+                                    className="bg-[#C58945] text-white px-4 py-2 rounded-xl font-bold shadow-md flex items-center gap-2 hover:bg-[#A06825]"
+                                >
+                                    <Plus size={18}/> Nova Precificação
+                                </button>
+                            </div>
+                            <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-6">
+                                {recipes.length === 0 && <div className="col-span-3 text-center py-10 text-[#8D6E63] opacity-50 italic">Nenhuma receita cadastrada.</div>}
+                                {recipes.map(r => {
+                                    const calc = calculateRecipe(r);
+                                    return (
+                                        <div key={r.id} className="bg-white p-5 rounded-2xl border border-[#E8DED5] shadow-sm hover:shadow-md transition-all group">
+                                            <div className="flex justify-between items-start mb-2">
+                                                <h3 className="font-bold text-lg text-[#4A3630] line-clamp-1">{r.name}</h3>
+                                                <div className="flex gap-2">
+                                                    <button onClick={() => setActiveRecipe(r)} className="text-[#C58945] hover:text-[#4A3630]"><Edit size={16}/></button>
+                                                    <button onClick={() => handleDeleteRecipe(r.id)} className="text-[#D48C95] hover:text-red-600"><Trash2 size={16}/></button>
+                                                </div>
+                                            </div>
+                                            <div className="flex justify-between items-end mt-4">
+                                                <div><p className="text-xs text-[#8D6E63] uppercase">Custo</p><p className="font-bold text-[#4A3630]">{formatMoney(calc.totalCost)}</p></div>
+                                                <div className="text-right"><p className="text-xs text-[#8D6E63] uppercase">Venda</p><p className="font-bold text-xl text-[#C58945]">{formatMoney(calc.unitPrice)}</p></div>
+                                            </div>
+                                            <button onClick={() => setActiveRecipe(r)} className="w-full mt-4 bg-[#FDF6F0] text-[#4A3630] py-2 rounded-xl font-bold hover:bg-[#E8DED5] transition-colors text-sm">Abrir Ficha Técnica</button>
+                                        </div>
+                                    )
+                                })}
+                            </div>
+                        </>
+                    ) : (
+                        <div className="grid lg:grid-cols-2 gap-8">
+                            <div className="space-y-6">
+                                <div className="flex items-center gap-2 mb-2">
+                                    <button onClick={() => setActiveRecipe(null)} className="text-[#8D6E63] hover:text-[#4A3630] font-bold text-sm">← Voltar</button>
+                                    <h2 className="text-xl font-bold text-[#4A3630]">Editando: {activeRecipe.name}</h2>
+                                </div>
+                                <div className="bg-white p-6 rounded-3xl shadow-sm border border-[#E8DED5] space-y-4">
+                                    <div><label className="text-xs font-bold text-[#8D6E63]">NOME</label><input value={activeRecipe.name} onChange={e => setActiveRecipe({...activeRecipe, name: e.target.value})} className="w-full p-3 bg-[#FAFAFA] border border-[#E8DED5] rounded-xl font-bold text-[#4A3630]"/></div>
+                                    <div className="grid grid-cols-2 gap-4">
+                                        <div><label className="text-xs font-bold text-[#8D6E63]">RENDIMENTO</label><input type="number" value={activeRecipe.yields} onChange={e => setActiveRecipe({...activeRecipe, yields: Number(e.target.value)})} className="w-full p-3 bg-[#FAFAFA] border border-[#E8DED5] rounded-xl"/></div>
+                                        <div><label className="text-xs font-bold text-[#8D6E63]">TEMPO (MIN)</label><input type="number" value={activeRecipe.time} onChange={e => setActiveRecipe({...activeRecipe, time: Number(e.target.value)})} className="w-full p-3 bg-[#FAFAFA] border border-[#E8DED5] rounded-xl"/></div>
+                                    </div>
+                                    <div className="pt-4 border-t border-dashed border-[#E8DED5]">
+                                        <label className="text-xs font-bold text-[#8D6E63] mb-2 block">INGREDIENTES</label>
+                                        <select className="w-full p-3 bg-[#FAFAFA] border border-[#E8DED5] rounded-xl mb-3 cursor-pointer" onChange={e => {
+                                            const id = Number(e.target.value);
+                                            if(!activeRecipe.ingredients.find(i => i.id === id)) setActiveRecipe({...activeRecipe, ingredients: [...activeRecipe.ingredients, {id, qty: 0}]});
+                                        }} value="">
+                                            <option value="" disabled>+ Adicionar da Despensa</option>
+                                            {dbIngredients.map(i => <option key={i.id} value={i.id}>{i.name}</option>)}
+                                        </select>
+                                        <div className="space-y-2">
+                                            {activeRecipe.ingredients.map(ing => {
+                                                const db = dbIngredients.find(d => d.id === ing.id);
+                                                if(!db) return null;
+                                                return (
+                                                    <div key={ing.id} className="flex items-center gap-2 bg-[#FDF6F0] p-2 rounded-xl">
+                                                        <div className="flex-1 text-sm font-bold">{db.name}</div>
+                                                        <input type="number" value={ing.qty} onChange={e => {
+                                                            const newIngs = activeRecipe.ingredients.map(i => i.id === ing.id ? {...i, qty: Number(e.target.value)} : i);
+                                                            setActiveRecipe({...activeRecipe, ingredients: newIngs});
+                                                        }} className="w-20 p-1 bg-white border rounded text-right"/>
+                                                        <span className="text-xs text-[#8D6E63]">g</span>
+                                                        <button onClick={() => setActiveRecipe({...activeRecipe, ingredients: activeRecipe.ingredients.filter(i => i.id !== ing.id)})} className="text-[#D48C95] hover:text-red-500 p-1"><Trash2 size={14}/></button>
+                                                    </div>
+                                                )
+                                            })}
+                                        </div>
+                                    </div>
+                                </div>
+                            </div>
+                            <div className="space-y-6">
+                                <div className="bg-[#4A3630] text-[#FDF6F0] p-8 rounded-3xl shadow-xl">
+                                    <p className="text-sm opacity-70 uppercase tracking-widest mb-1">Preço Sugerido (Unidade)</p>
+                                    <p className="text-5xl font-serif font-bold text-[#C58945] mb-6">{formatMoney(calculateRecipe(activeRecipe).unitPrice)}</p>
+                                    <div className="grid grid-cols-2 gap-4 border-t border-white/10 pt-4 text-sm">
+                                        <div><p className="opacity-50">Custo Total</p><p className="font-bold">{formatMoney(calculateRecipe(activeRecipe).totalCost)}</p></div>
+                                        <div><p className="opacity-50">Lucro Líquido</p><p className="font-bold text-[#4ADE80]">+{formatMoney(calculateRecipe(activeRecipe).finalPrice - calculateRecipe(activeRecipe).totalCost)}</p></div>
+                                    </div>
+                                </div>
+                                <div className="bg-white p-6 rounded-3xl shadow-sm border border-[#E8DED5]">
+                                    <div className="flex justify-between mb-2"><span className="font-bold text-[#4A3630]">Margem de Lucro</span><span className="font-bold text-[#C58945]">{activeRecipe.profit}%</span></div>
+                                    <input type="range" min="0" max="300" value={activeRecipe.profit} onChange={e => setActiveRecipe({...activeRecipe, profit: Number(e.target.value)})} className="w-full accent-[#C58945]"/>
+                                    <button onClick={handleSaveRecipe} className="w-full mt-6 bg-[#C58945] text-white p-4 rounded-xl font-bold hover:bg-[#B0783A] transition-colors flex items-center justify-center gap-2 shadow-md"><Save size={20}/> Salvar</button>
+                                </div>
+                            </div>
+                        </div>
+                    )}
+                </div>
+            )}
+
+            {/* --- 3. DESPENSA --- */}
+            {view === 'ingredients' && (
+                <div className="animate-fade-in space-y-6">
+                    <h2 className="text-2xl font-serif font-bold text-[#4A3630]">Minha Despensa</h2>
+                    <div className="bg-[#FDF6F0] p-4 rounded-2xl flex flex-col md:flex-row gap-2 items-end border border-[#E8DED5]">
+                        <div className="flex-1 w-full"><label className="text-xs font-bold text-[#8D6E63]">Nome</label><input className="w-full p-2 rounded-lg border" value={newIngredient.name} onChange={e => setNewIngredient({...newIngredient, name: e.target.value})} /></div>
+                        <div className="w-24"><label className="text-xs font-bold text-[#8D6E63]">Peso (g)</label><input type="number" className="w-full p-2 rounded-lg border" value={newIngredient.packageWeight} onChange={e => setNewIngredient({...newIngredient, packageWeight: Number(e.target.value)})} /></div>
+                        <div className="w-24"><label className="text-xs font-bold text-[#8D6E63]">Preço</label><input type="number" className="w-full p-2 rounded-lg border" value={newIngredient.cost} onChange={e => setNewIngredient({...newIngredient, cost: Number(e.target.value)})} /></div>
+                        <button onClick={() => { if(newIngredient.name && newIngredient.cost) { setDbIngredients([...dbIngredients, { id: Date.now(), name: newIngredient.name, packageWeight: Number(newIngredient.packageWeight), cost: Number(newIngredient.cost) }]); setNewIngredient({ name: '', packageWeight: '', cost: '' }); } }} className="bg-[#C58945] text-white p-2 rounded-lg mb-[1px]"><Plus/></button>
+                    </div>
+                    <div className="grid gap-2">
+                        {dbIngredients.map(ing => (
+                            <div key={ing.id} className="bg-white p-4 rounded-xl border border-[#E8DED5] flex justify-between items-center">
+                                <div><span className="font-bold text-[#4A3630]">{ing.name}</span><span className="text-xs text-[#8D6E63] ml-2">{ing.packageWeight}g • {formatMoney(ing.cost)}</span></div>
+                                <div className="flex gap-2">
+                                    <button onClick={() => setEditingIngredient(ing)} className="p-2 bg-[#FDF6F0] rounded-lg text-[#C58945]"><Edit size={16}/></button>
+                                    <button onClick={() => handleDeleteIngredient(ing.id)} className="p-2 bg-red-50 rounded-lg text-red-500"><Trash2 size={16}/></button>
+                                </div>
+                            </div>
+                        ))}
+                    </div>
+                </div>
+            )}
+
+            {/* --- 4. LISTA DE COMPRAS INTELIGENTE (ATUALIZADA) --- */}
+            {view === 'shopping' && (
+                <div className="animate-fade-in grid lg:grid-cols-2 gap-8">
+                    <div className="space-y-4">
+                        <h2 className="text-2xl font-serif font-bold text-[#4A3630]">Gerador de Lista</h2>
+                        <p className="text-sm text-[#8D6E63]">Adicione o que vai produzir:</p>
+                        <div className="bg-white rounded-2xl border border-[#E8DED5] overflow-hidden max-h-96 overflow-y-auto">
+                            {recipes.map(r => {
+                                const count = shoppingList.find(s => s.recipeId === r.id)?.count || 0;
+                                return (
+                                    <div key={r.id} className="flex justify-between p-3 border-b border-[#E8DED5] last:border-0">
+                                        <span className="font-bold text-sm">{r.name}</span>
+                                        <div className="flex items-center gap-3">
+                                            <button onClick={() => { const list = shoppingList.filter(s => s.recipeId !== r.id); if(count > 0) list.push({recipeId: r.id, count: count - 1}); setShoppingList(list); }} className="w-6 h-6 bg-[#FDF6F0] rounded flex items-center justify-center">-</button>
+                                            <span className="text-sm font-bold w-4 text-center">{count}</span>
+                                            <button onClick={() => { const list = shoppingList.filter(s => s.recipeId !== r.id); list.push({recipeId: r.id, count: count + 1}); setShoppingList(list); }} className="w-6 h-6 bg-[#4A3630] text-white rounded flex items-center justify-center">+</button>
+                                        </div>
+                                    </div>
+                                )
+                            })}
+                        </div>
+                    </div>
+                    <div className="space-y-4">
+                        <div className="flex justify-between items-center">
+                            <h3 className="font-bold text-[#4A3630]">Resultado (Ingredientes e Valores)</h3>
+                            <button onClick={() => { navigator.clipboard.writeText(generateShoppingListText()); alert("Copiado!"); }} className="text-[#C58945] text-sm font-bold flex gap-1 items-center"><Copy size={14}/> Copiar</button>
+                        </div>
+                        <div className="bg-[#FAFAFA] p-4 rounded-2xl border border-[#E8DED5] h-full whitespace-pre-wrap text-sm font-mono text-[#5D443C]">
+                            {shoppingList.length === 0 ? "Adicione receitas ao lado..." : generateShoppingListText()}
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {/* --- 5. CLIENTES --- */}
+            {view === 'clients' && (
+                <div className="animate-fade-in space-y-6">
+                    <h2 className="text-2xl font-serif font-bold text-[#4A3630]">Cadastro de Clientes</h2>
+                    <div className="bg-white p-6 rounded-2xl border border-[#E8DED5] grid md:grid-cols-3 gap-4 items-end shadow-sm">
+                         <div><label className="text-xs font-bold text-[#8D6E63]">Nome</label><input className="w-full p-2 border rounded-lg" value={newClient.name} onChange={e => setNewClient({...newClient, name: e.target.value})}/></div>
+                         <div><label className="text-xs font-bold text-[#8D6E63]">WhatsApp</label><input className="w-full p-2 border rounded-lg" value={newClient.phone} onChange={e => setNewClient({...newClient, phone: e.target.value})}/></div>
+                         <div><label className="text-xs font-bold text-[#8D6E63]">Nascimento</label><input type="date" className="w-full p-2 border rounded-lg" value={newClient.birthday} onChange={e => setNewClient({...newClient, birthday: e.target.value})}/></div>
+                         <button onClick={handleAddClient} className="bg-[#4A3630] text-white p-2 rounded-lg font-bold md:col-span-3">Cadastrar</button>
+                    </div>
+                    <div className="grid md:grid-cols-2 gap-4">
+                        {clients.map(c => (
+                            <div key={c.id} className="bg-white p-4 rounded-xl border border-[#E8DED5] shadow-sm flex justify-between">
+                                <div>
+                                    <p className="font-bold text-[#4A3630] flex items-center gap-2">{c.name} {c.birthday && parseInt(c.birthday.split('-')[1]) === new Date().getMonth() + 1 && <Cake size={14} className="text-[#D48C95]"/>}</p>
+                                    <p className="text-xs text-[#8D6E63]">{c.phone}</p>
+                                </div>
+                                <button onClick={() => setClients(clients.filter(x => x.id !== c.id))} className="text-red-400"><Trash2 size={16}/></button>
+                            </div>
+                        ))}
+                    </div>
+                </div>
+            )}
+
+            {/* --- 6. AGENDA --- */}
+            {view === 'orders' && (
+                <div className="animate-fade-in space-y-6">
+                     <h2 className="text-2xl font-serif font-bold text-[#4A3630]">Agenda</h2>
+                     <div className="bg-white p-6 rounded-3xl shadow-sm border border-[#E8DED5]">
+                         <h3 className="font-bold mb-4 text-[#8D6E63] uppercase text-xs">Novo Pedido</h3>
+                         <div className="grid md:grid-cols-2 lg:grid-cols-4 gap-4">
+                             <div>
+                                 <label className="text-xs font-bold text-[#8D6E63]">Cliente</label>
+                                 <select value={newOrder.clientId} onChange={e => setNewOrder({...newOrder, clientId: e.target.value})} className="w-full p-2 border rounded-xl bg-[#FAFAFA] cursor-pointer">
+                                     <option value="">Selecione...</option>
+                                     {clients.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+                                 </select>
+                             </div>
+                             <div><label className="text-xs font-bold text-[#8D6E63]">Data</label><input type="date" value={newOrder.deliveryDate} onChange={e => setNewOrder({...newOrder, deliveryDate: e.target.value})} className="w-full p-2 border rounded-xl bg-[#FAFAFA]"/></div>
+                             <div><label className="text-xs font-bold text-[#8D6E63]">Valor</label><input type="number" value={newOrder.value} onChange={e => setNewOrder({...newOrder, value: e.target.value})} className="w-full p-2 border rounded-xl bg-[#FAFAFA]"/></div>
+                             <div className="md:col-span-2 lg:col-span-4"><label className="text-xs font-bold text-[#8D6E63]">Descrição</label><input value={newOrder.items} onChange={e => setNewOrder({...newOrder, items: e.target.value})} className="w-full p-2 border rounded-xl bg-[#FAFAFA]"/></div>
+                         </div>
+                         <button onClick={() => {
+                              if (newOrder.clientId && newOrder.value) {
+                                  const client = clients.find(c => c.id === Number(newOrder.clientId));
+                                  setOrders([...orders, { id: Date.now(), clientId: Number(newOrder.clientId), clientName: client ? client.name : 'Desconhecido', deliveryDate: newOrder.deliveryDate, items: newOrder.items, value: Number(newOrder.value), paymentMethod: newOrder.paymentMethod, status: 'pendente' }]);
+                                  setNewOrder({ clientId: '', deliveryDate: '', items: '', value: '', paymentMethod: 'Pix' });
+                              }
+                          }} className="mt-4 w-full bg-[#C58945] text-white p-3 rounded-xl font-bold hover:bg-[#A06825]">Agendar</button>
+                     </div>
+                     <div className="grid md:grid-cols-2 gap-6">
+                        <div className="bg-[#FFF3E0] p-6 rounded-3xl border border-[#FFE0B2]">
+                            <h3 className="font-bold text-[#C58945] mb-4 flex items-center gap-2"><Clock size={18}/> Pendentes</h3>
+                            <div className="space-y-3">
+                                {orders.filter(o => o.status === 'pendente').map(o => (
+                                    <div key={o.id} className="bg-white p-4 rounded-xl shadow-sm border border-[#FFE0B2]">
+                                        <div className="flex justify-between items-start mb-2">
+                                            <div><div className="font-bold text-[#4A3630]">{o.clientName}</div><div className="text-xs text-[#8D6E63]">{o.deliveryDate.split('-').reverse().join('/')}</div></div>
+                                            <div className="text-lg font-bold text-[#C58945]">{formatMoney(o.value)}</div>
+                                        </div>
+                                        <button onClick={() => { if(window.confirm("Confirmar pagamento?")) setOrders(orders.map(ord => ord.id === o.id ? {...ord, status: 'pago' as const} : ord)); }} className="text-xs bg-[#4ADE80] text-[#064E3B] px-3 py-2 rounded-lg font-bold w-full flex justify-center gap-1"><Check size={12}/> Pagar</button>
+                                    </div>
+                                ))}
+                            </div>
+                        </div>
+                        <div className="bg-[#E7F7EE] p-6 rounded-3xl border border-[#C8E6C9]">
+                            <h3 className="font-bold text-[#2E7D32] mb-4 flex items-center gap-2"><Check size={18}/> Pagos</h3>
+                            <div className="space-y-3 opacity-70">
+                                 {orders.filter(o => o.status === 'pago' || o.status === 'entregue').map(o => (
+                                    <div key={o.id} className="bg-white p-4 rounded-xl shadow-sm border border-[#C8E6C9] flex justify-between">
+                                        <span className="font-bold text-[#4A3630]">{o.clientName}</span>
+                                        <span className="font-bold text-[#2E7D32]">{formatMoney(o.value)}</span>
+                                    </div>
+                                ))}
+                            </div>
+                        </div>
+                     </div>
+                </div>
+            )}
+
+            {/* --- 7. CONFIGURAÇÕES --- */}
+            {view === 'config' && (
+                 <div className="bg-white p-8 rounded-3xl shadow-sm border border-[#E8DED5] animate-fade-in max-w-2xl mx-auto">
+                    <h2 className="text-xl font-bold text-gray-800 flex items-center gap-2 mb-6"><Settings className="text-[#C58945]"/> Ajustes</h2>
+                    <div className="grid md:grid-cols-2 gap-6">
+                        <div><label className="block text-xs font-bold text-[#8D6E63] uppercase mb-1">Salário (R$)</label><input type="number" value={config.salary} onChange={e => setConfig({...config, salary: e.target.value})} className="w-full p-3 bg-[#FAFAFA] border border-[#E8DED5] rounded-xl" /></div>
+                        <div><label className="block text-xs font-bold text-[#8D6E63] uppercase mb-1">Custos Fixos (R$)</label><input type="number" value={config.costs} onChange={e => setConfig({...config, costs: e.target.value})} className="w-full p-3 bg-[#FAFAFA] border border-[#E8DED5] rounded-xl" /></div>
+                        <div><label className="block text-xs font-bold text-[#8D6E63] uppercase mb-1">Horas/Dia</label><input type="number" value={config.hours} onChange={e => setConfig({...config, hours: e.target.value})} className="w-full p-3 bg-[#FAFAFA] border border-[#E8DED5] rounded-xl" /></div>
+                        <div><label className="block text-xs font-bold text-[#8D6E63] uppercase mb-1">Dias/Semana</label><input type="number" value={config.days} onChange={e => setConfig({...config, days: e.target.value})} className="w-full p-3 bg-[#FAFAFA] border border-[#E8DED5] rounded-xl" /></div>
+                    </div>
+                </div>
+            )}
+
+            {/* --- 8. PERFIL (NOVA ABA) --- */}
+            {view === 'profile' && (
+                <div className="animate-fade-in space-y-6">
+                    <h2 className="text-2xl font-serif font-bold text-[#4A3630] flex items-center gap-2"><User className="text-[#C58945]"/> Minha Empresa</h2>
+                    <div className="bg-white p-8 rounded-3xl shadow-sm border border-[#E8DED5] max-w-2xl">
+                        <p className="text-[#8D6E63] mb-6 text-sm">Personalize o aplicativo com a identidade da sua confeitaria.</p>
+                        <div className="space-y-4">
+                            <div>
+                                <label className="text-xs font-bold text-[#8D6E63] uppercase">Nome da Confeitaria</label>
+                                <input 
+                                    value={companyProfile.businessName} 
+                                    onChange={e => setCompanyProfile({...companyProfile, businessName: e.target.value})} 
+                                    className="w-full p-3 bg-[#FAFAFA] border border-[#E8DED5] rounded-xl mt-1"
+                                    placeholder="Ex: Doce Encanto"
+                                />
+                            </div>
+                            <div>
+                                <label className="text-xs font-bold text-[#8D6E63] uppercase">Seu Nome (Chef)</label>
+                                <input 
+                                    value={companyProfile.chefName} 
+                                    onChange={e => setCompanyProfile({...companyProfile, chefName: e.target.value})} 
+                                    className="w-full p-3 bg-[#FAFAFA] border border-[#E8DED5] rounded-xl mt-1"
+                                    placeholder="Como você quer ser chamada?"
+                                />
+                            </div>
+                            <div>
+                                <label className="text-xs font-bold text-[#8D6E63] uppercase">CNPJ (Opcional)</label>
+                                <input 
+                                    value={companyProfile.cnpj} 
+                                    onChange={e => setCompanyProfile({...companyProfile, cnpj: e.target.value})} 
+                                    className="w-full p-3 bg-[#FAFAFA] border border-[#E8DED5] rounded-xl mt-1"
+                                    placeholder="00.000.000/0000-00"
+                                />
+                            </div>
+                        </div>
+                        <button onClick={() => alert('Dados salvos com sucesso!')} className="w-full mt-6 bg-[#4A3630] text-white p-4 rounded-xl font-bold hover:bg-[#382823]">Salvar Perfil</button>
+                    </div>
+                </div>
+            )}
+
+            {/* --- 9. MARKETING IA (SIMULADO) --- */}
+            {view === 'ai' && (
+                <div className="max-w-2xl mx-auto animate-fade-in">
+                    <div className="bg-white p-8 rounded-3xl shadow-sm border border-[#E8DED5] text-center">
+                        <div className="bg-gradient-to-r from-[#C58945] to-[#D48C95] w-16 h-16 rounded-2xl flex items-center justify-center mx-auto mb-6 text-white shadow-lg"><Sparkles size={32} /></div>
+                        <h2 className="text-2xl font-serif font-bold mb-2">Assistente de Marketing</h2>
+                        <p className="text-[#8D6E63] mb-8">Gere legendas irresistíveis para o Instagram.</p>
+                        <div className="space-y-4 text-left"><label className="text-xs font-bold uppercase text-[#8D6E63]">Sobre o que é o post?</label><textarea className="w-full p-4 bg-[#FAFAFA] border border-[#E8DED5] rounded-xl focus:outline-none focus:border-[#C58945]" rows={3} placeholder="Ex: Fiz um bolo de cenoura com brigadeiro belga..." value={aiPrompt} onChange={e => setAiPrompt(e.target.value)} /><button onClick={() => handleAiGenerate()} disabled={isAiLoading || !aiPrompt} className="w-full bg-[#4A3630] text-white p-4 rounded-xl font-bold hover:bg-[#382823] disabled:opacity-50">{isAiLoading ? 'Criando Mágica...' : '✨ Gerar Legenda'}</button></div>
+                        {aiResponse && (<div className="mt-8 p-6 bg-[#FDF6F0] rounded-2xl border border-[#E8DED5] text-left relative"><p className="whitespace-pre-wrap text-[#4A3630]">{aiResponse}</p><button onClick={() => navigator.clipboard.writeText(aiResponse)} className="absolute top-4 right-4 text-[#C58945] hover:text-[#4A3630]"><Copy size={20}/></button></div>)}
+                    </div>
+                </div>
+            )}
+        </div>
+      </div>
+      <style>{@import url('https://fonts.googleapis.com/css2?family=Playfair+Display:wght@700&family=Lato:wght@400;700&display=swap'); .font-serif { font-family: 'Playfair Display', serif; } .font-sans { font-family: 'Lato', sans-serif; } .animate-fade-in { animation: fadeIn 0.3s ease-out; } @keyframes fadeIn { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: translateY(0); } }}</style>
+    </div>
+  );
+};
+
+export default App;
