@@ -1,11 +1,10 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import { initializeApp } from "firebase/app";
 import { getAuth, signInWithEmailAndPassword, signOut, onAuthStateChanged } from "firebase/auth";
-// IMPORTAÇÃO DE TODOS OS ÍCONES USADOS
 import { 
   Calculator, Settings, Plus, Trash2, Package, Clock, ChefHat, 
   Sparkles, ShoppingCart, Calendar, TrendingUp, LogOut, Copy, Check, Menu, X, 
-  Save, Edit, Users, Cake, Phone, User, AlertCircle, ChevronRight
+  Save, Edit, Users, Cake, Phone, User, DollarSign, AlertCircle, ChevronRight
 } from 'lucide-react';
 
 // --- 🔒 CONFIGURAÇÃO DO FIREBASE ---
@@ -23,8 +22,20 @@ const firebaseConfig = {
 const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 
+// --- TIPOS ---
+interface Ingredient { id: number; name: string; packageWeight: number; cost: number; }
+interface RecipeIngredient { id: number; qty: number; }
+interface Recipe { id: number; name: string; yields: number; time: number; profit: number; ingredients: RecipeIngredient[] }
+interface Client { id: number; name: string; phone: string; birthday: string; }
+interface Order { 
+  id: number; clientId: number; clientName: string; deliveryDate: string; 
+  items: string; value: number; paymentMethod: string; status: string; 
+}
+interface CompanyProfile { businessName: string; chefName: string; cnpj: string; }
+interface ShoppingItem { type: 'recipe' | 'ingredient'; id: number; count: number; }
+
 // --- DADOS INICIAIS ---
-const initialIngredients = [
+const initialIngredients: Ingredient[] = [
   { id: 1, name: 'Leite Condensado', packageWeight: 395, cost: 5.50 },
   { id: 2, name: 'Creme de Leite', packageWeight: 200, cost: 3.20 },
   { id: 3, name: 'Chocolate 50%', packageWeight: 1000, cost: 35.00 },
@@ -32,7 +43,7 @@ const initialIngredients = [
 ];
 
 const App = () => {
-  // --- ESTADOS GERAIS (Tipagem 'any' para evitar erros de compilação) ---
+  // --- ESTADOS GERAIS ---
   const [user, setUser] = useState<any>(null);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -42,12 +53,12 @@ const App = () => {
   const [loginError, setLoginError] = useState('');
   
   // --- PERSISTÊNCIA ---
-  const [config, setConfig] = useState<any>(() => JSON.parse(localStorage.getItem('cv_config') || '{"salary":3000,"costs":800,"hours":8,"days":5}'));
-  const [dbIngredients, setDbIngredients] = useState<any[]>(() => JSON.parse(localStorage.getItem('cv_ingredients') || JSON.stringify(initialIngredients)));
-  const [recipes, setRecipes] = useState<any[]>(() => JSON.parse(localStorage.getItem('cv_recipes') || '[]'));
-  const [clients, setClients] = useState<any[]>(() => JSON.parse(localStorage.getItem('cv_clients') || '[]'));
-  const [orders, setOrders] = useState<any[]>(() => JSON.parse(localStorage.getItem('cv_orders') || '[]'));
-  const [companyProfile, setCompanyProfile] = useState<any>(() => JSON.parse(localStorage.getItem('cv_profile') || '{"businessName":"","chefName":"","cnpj":""}'));
+  const [config, setConfig] = useState(() => JSON.parse(localStorage.getItem('cv_config') || '{"salary":3000,"costs":800,"hours":8,"days":5}'));
+  const [dbIngredients, setDbIngredients] = useState<Ingredient[]>(() => JSON.parse(localStorage.getItem('cv_ingredients') || JSON.stringify(initialIngredients)));
+  const [recipes, setRecipes] = useState<Recipe[]>(() => JSON.parse(localStorage.getItem('cv_recipes') || '[]'));
+  const [clients, setClients] = useState<Client[]>(() => JSON.parse(localStorage.getItem('cv_clients') || '[]'));
+  const [orders, setOrders] = useState<Order[]>(() => JSON.parse(localStorage.getItem('cv_orders') || '[]'));
+  const [companyProfile, setCompanyProfile] = useState<CompanyProfile>(() => JSON.parse(localStorage.getItem('cv_profile') || '{"businessName":"","chefName":"","cnpj":""}'));
 
   // --- ESTADOS DE FORMULÁRIOS ---
   const [activeRecipe, setActiveRecipe] = useState<any>(null);
@@ -60,13 +71,12 @@ const App = () => {
   const [newOrder, setNewOrder] = useState({ clientId: '', deliveryDate: '', items: '', value: '', paymentMethod: 'Pix' });
   const [newClient, setNewClient] = useState({ name: '', phone: '', birthday: '' });
 
-  // IA & Lista
   const [aiPrompt, setAiPrompt] = useState('');
   const [aiResponse, setAiResponse] = useState('');
   const [isAiLoading, setIsAiLoading] = useState(false);
-  const [shoppingList, setShoppingList] = useState<any[]>([]);
+  const [shoppingList, setShoppingList] = useState<ShoppingItem[]>([]);
 
-  // Efeitos de Salvamento
+  // Efeitos
   useEffect(() => { localStorage.setItem('cv_config', JSON.stringify(config)); }, [config]);
   useEffect(() => { localStorage.setItem('cv_ingredients', JSON.stringify(dbIngredients)); }, [dbIngredients]);
   useEffect(() => { localStorage.setItem('cv_recipes', JSON.stringify(recipes)); }, [recipes]);
@@ -74,13 +84,12 @@ const App = () => {
   useEffect(() => { localStorage.setItem('cv_orders', JSON.stringify(orders)); }, [orders]);
   useEffect(() => { localStorage.setItem('cv_profile', JSON.stringify(companyProfile)); }, [companyProfile]);
   
-  // Login Ágil
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, (u) => { setUser(u); setLoadingAuth(false); });
     return () => unsub();
   }, []);
 
-  // --- LÓGICA DE NEGÓCIO ---
+  // --- LÓGICA FINANCEIRA ---
   const formatMoney = (v: any) => Number(v).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
   
   const getHourlyRate = () => {
@@ -92,18 +101,17 @@ const App = () => {
   const calculateRecipe = (rec: any) => {
     let matCost = 0;
     rec.ingredients.forEach((i: any) => {
-      const ing = dbIngredients.find((d: any) => d.id === i.id);
+      const ing = dbIngredients.find(d => d.id === i.id);
       if (ing) matCost += (ing.cost / ing.packageWeight) * i.qty;
     });
-    const varCost = matCost * 0.10;
+    const varCost = matCost * 0.10; 
     const laborCost = (rec.time / 60) * getHourlyRate();
     const totalCost = matCost + varCost + laborCost;
     const finalPrice = totalCost * (1 + (rec.profit / 100));
     return { totalCost, finalPrice, unitPrice: finalPrice / (rec.yields || 1) };
   };
 
-  // --- LISTA DE COMPRAS INTELIGENTE ---
-  // Calcula o total de ingredientes baseados nas receitas selecionadas
+  // Lista de Compras
   const shoppingStats = useMemo(() => {
     const totals: any = {};
     let totalCost = 0;
@@ -111,9 +119,9 @@ const App = () => {
     shoppingList.forEach(item => {
       if (item.count > 0) {
         if (item.type === 'recipe') {
-          const rec = recipes.find((r: any) => r.id === item.id);
+          const rec = recipes.find(r => r.id === item.id);
           rec?.ingredients.forEach((ing: any) => {
-            const dbIng = dbIngredients.find((d: any) => d.id === ing.id);
+            const dbIng = dbIngredients.find(d => d.id === ing.id);
             if (dbIng) {
               const q = ing.qty * item.count;
               const c = (dbIng.cost / dbIng.packageWeight) * q;
@@ -124,7 +132,7 @@ const App = () => {
             }
           });
         } else {
-          const dbIng = dbIngredients.find((d: any) => d.id === item.id);
+          const dbIng = dbIngredients.find(d => d.id === item.id);
           if (dbIng) {
             const q = dbIng.packageWeight * item.count;
             const c = dbIng.cost * item.count;
@@ -147,32 +155,18 @@ const App = () => {
       catch (e) { setLoginError("Dados incorretos."); } 
   };
 
-  // Ingreidentes
-  const handleAddIngredient = () => {
-    if (newIngredient.name && newIngredient.cost) {
-        setDbIngredients([...dbIngredients, { id: Date.now(), name: newIngredient.name, packageWeight: Number(newIngredient.packageWeight), cost: Number(newIngredient.cost) }]);
-        setNewIngredient({ name: '', packageWeight: '', cost: '' });
-    }
-  };
-  const handleUpdateIngredient = () => {
-    if(editingIngredient) {
-        setDbIngredients(dbIngredients.map((ing: any) => ing.id === editingIngredient.id ? editingIngredient : ing));
-        setEditingIngredient(null);
-    }
-  };
   const handleDeleteIngredient = (id: number) => {
-      const isUsed = recipes.some((r: any) => r.ingredients.some((i: any) => i.id === id));
-      if(isUsed && !window.confirm("Este ingrediente é usado em receitas. Se apagar, o custo delas ficará errado. Continuar?")) return;
-      if(!isUsed && !window.confirm("Tem certeza que deseja apagar este ingrediente?")) return;
-      setDbIngredients(dbIngredients.filter((i: any) => i.id !== id));
+      const isUsed = recipes.some(r => r.ingredients.some((i: any) => i.id === id));
+      if(isUsed && !window.confirm("Ingrediente em uso. Continuar?")) return;
+      if(!isUsed && !window.confirm("Apagar ingrediente?")) return;
+      setDbIngredients(dbIngredients.filter(i => i.id !== id));
   };
 
-  // Receitas
   const handleSaveRecipe = () => {
       if (!currentRecipe.name) return alert("Dê um nome para a receita!");
       
       if (isEditingRecipe) {
-          setRecipes(recipes.map((r: any) => r.id === currentRecipe.id ? currentRecipe : r));
+          setRecipes(recipes.map(r => r.id === currentRecipe.id ? currentRecipe : r));
           alert("Receita atualizada!");
           setIsEditingRecipe(false);
       } else {
@@ -191,10 +185,23 @@ const App = () => {
   };
 
   const handleDeleteRecipe = (id: number) => {
-      if(window.confirm("Excluir receita?")) setRecipes(recipes.filter((r: any) => r.id !== id));
+      if(window.confirm("Excluir receita?")) setRecipes(recipes.filter(r => r.id !== id));
   };
 
-  // Clientes e Pedidos
+  const handleAddIngredient = () => {
+    if (newIngredient.name && newIngredient.cost) {
+        setDbIngredients([...dbIngredients, { id: Date.now(), name: newIngredient.name, packageWeight: Number(newIngredient.packageWeight), cost: Number(newIngredient.cost) }]);
+        setNewIngredient({ name: '', packageWeight: '', cost: '' });
+    }
+  };
+
+  const handleUpdateIngredient = () => {
+      if(editingIngredient) {
+          setDbIngredients(dbIngredients.map(ing => ing.id === editingIngredient.id ? editingIngredient : ing));
+          setEditingIngredient(null);
+      }
+  };
+
   const handleAddClient = () => {
     if (newClient.name) {
         setClients([...clients, { id: Date.now(), ...newClient }]);
@@ -205,7 +212,7 @@ const App = () => {
 
   const handleAddOrder = () => {
       if (newOrder.clientId && newOrder.value) {
-          const client = clients.find((c: any) => c.id === Number(newOrder.clientId));
+          const client = clients.find(c => c.id === Number(newOrder.clientId));
           setOrders([...orders, {
               id: Date.now(),
               clientId: Number(newOrder.clientId),
@@ -223,11 +230,10 @@ const App = () => {
 
   const confirmPayment = (orderId: number) => {
       if(window.confirm("Confirmar pagamento?")) {
-          setOrders(orders.map((o: any) => o.id === orderId ? {...o, status: 'pago'} : o));
+          setOrders(orders.map(o => o.id === orderId ? {...o, status: 'pago'} : o));
       }
   };
 
-  // Lista de Compras
   const handleAddToShoppingList = (type: 'recipe'|'ingredient', id: number, delta: number) => {
       setShoppingList(prev => {
           const existing = prev.find(i => i.type === type && i.id === id);
@@ -250,7 +256,6 @@ const App = () => {
     return text;
   };
 
-  // IA Simulada
   const handleAiGenerate = () => {
     setIsAiLoading(true);
     setTimeout(() => {
@@ -258,8 +263,6 @@ const App = () => {
         setIsAiLoading(false);
     }, 2000);
   };
-
-  // --- RENDERIZAÇÃO ---
 
   if (loadingAuth) return <div className="min-h-screen flex items-center justify-center bg-[#FDF6F0] text-[#C58945] font-bold">Carregando...</div>;
 
@@ -362,7 +365,7 @@ const App = () => {
                 </div>
             )}
 
-            {/* CALCULADORA & RECEITAS (Agora com Lista Abaixo) */}
+            {/* CALCULADORA & RECEITAS (COM LISTA ABAIXO) */}
             {view === 'calculator' && (
                 <div className="space-y-8 animate-fade-in">
                     {/* Formulário */}
@@ -370,7 +373,7 @@ const App = () => {
                          <div className="bg-white p-6 rounded-3xl shadow-sm border border-[#E8DED5] space-y-4">
                             <div className="flex justify-between items-center mb-2">
                                 <h2 className="text-xl font-bold text-[#4A3630] flex items-center gap-2"><Calculator className="text-[#C58945]"/> {isEditingRecipe ? 'Editar Receita' : 'Nova Precificação'}</h2>
-                                {(activeRecipe || isEditingRecipe) && <button onClick={() => { setActiveRecipe(null); setIsEditingRecipe(false); setCurrentRecipe({ id: 0, name: '', yields: 1, time: 60, profit: 30, ingredients: [] }); }} className="text-xs text-[#8D6E63] border px-2 py-1 rounded hover:bg-gray-50">Cancelar Edição</button>}
+                                {isEditingRecipe && <button onClick={() => { setIsEditingRecipe(false); setCurrentRecipe({ id: 0, name: '', yields: 1, time: 60, profit: 30, ingredients: [] }); }} className="text-xs text-[#8D6E63] border px-2 py-1 rounded hover:bg-gray-50">Cancelar Edição</button>}
                             </div>
                             <div><label className="text-xs font-bold text-[#8D6E63]">NOME DA RECEITA</label><input value={currentRecipe.name} onChange={e => setCurrentRecipe({...currentRecipe, name: e.target.value})} className="w-full p-3 bg-[#FAFAFA] border border-[#E8DED5] rounded-xl font-bold text-[#4A3630]" placeholder="Ex: Bolo de Cenoura"/></div>
                             <div className="grid grid-cols-2 gap-4">
@@ -381,24 +384,24 @@ const App = () => {
                                 <label className="text-xs font-bold text-[#8D6E63] mb-2 block">INGREDIENTES</label>
                                 <select className="w-full p-3 bg-[#FAFAFA] border border-[#E8DED5] rounded-xl mb-3 cursor-pointer" onChange={e => {
                                     const id = Number(e.target.value);
-                                    if(!currentRecipe.ingredients.find((i: any) => i.id === id)) setCurrentRecipe({...currentRecipe, ingredients: [...currentRecipe.ingredients, {id, qty: 0}]});
+                                    if(!currentRecipe.ingredients.find(i => i.id === id)) setCurrentRecipe({...currentRecipe, ingredients: [...currentRecipe.ingredients, {id, qty: 0}]});
                                 }} value="">
                                     <option value="" disabled>+ Adicionar da Despensa</option>
                                     {dbIngredients.map(i => <option key={i.id} value={i.id}>{i.name}</option>)}
                                 </select>
                                 <div className="space-y-2 max-h-60 overflow-y-auto">
-                                    {currentRecipe.ingredients.map((ing: any) => {
-                                        const db = dbIngredients.find((d: any) => d.id === ing.id);
+                                    {currentRecipe.ingredients.map(ing => {
+                                        const db = dbIngredients.find(d => d.id === ing.id);
                                         if(!db) return null;
                                         return (
                                             <div key={ing.id} className="flex items-center gap-2 bg-[#FDF6F0] p-2 rounded-xl">
                                                 <div className="flex-1 text-sm font-bold truncate">{db.name}</div>
                                                 <input type="number" value={ing.qty} onChange={e => {
-                                                    const newIngs = currentRecipe.ingredients.map((i: any) => i.id === ing.id ? {...i, qty: Number(e.target.value)} : i);
+                                                    const newIngs = currentRecipe.ingredients.map(i => i.id === ing.id ? {...i, qty: Number(e.target.value)} : i);
                                                     setCurrentRecipe({...currentRecipe, ingredients: newIngs});
                                                 }} className="w-20 p-1 bg-white border rounded text-right"/>
                                                 <span className="text-xs text-[#8D6E63]">g</span>
-                                                <button onClick={() => setCurrentRecipe({...currentRecipe, ingredients: currentRecipe.ingredients.filter((i: any) => i.id !== ing.id)})} className="text-[#D48C95] hover:text-red-500 p-1"><Trash2 size={14}/></button>
+                                                <button onClick={() => setCurrentRecipe({...currentRecipe, ingredients: currentRecipe.ingredients.filter(i => i.id !== ing.id)})} className="text-[#D48C95] hover:text-red-500 p-1"><Trash2 size={14}/></button>
                                             </div>
                                         )
                                     })}
@@ -419,13 +422,13 @@ const App = () => {
                                 <div className="flex justify-between mb-2"><span className="font-bold text-[#4A3630]">Margem de Lucro</span><span className="font-bold text-[#C58945]">{currentRecipe.profit}%</span></div>
                                 <input type="range" min="0" max="300" value={currentRecipe.profit} onChange={e => setCurrentRecipe({...currentRecipe, profit: Number(e.target.value)})} className="w-full accent-[#C58945]"/>
                                 <button onClick={handleSaveRecipe} className="w-full mt-6 bg-[#C58945] text-white p-4 rounded-xl font-bold hover:bg-[#B0783A] transition-colors flex items-center justify-center gap-2 shadow-md">
-                                    <Save size={20}/> {isEditingRecipe ? 'Atualizar Receita' : 'Salvar na Biblioteca'}
+                                    <Save size={20}/> {isEditingRecipe ? 'Atualizar' : 'Salvar na Biblioteca'}
                                 </button>
                             </div>
                         </div>
                     </div>
 
-                    {/* LISTA DE RECEITAS SALVAS (AGORA APARECE AQUI) */}
+                    {/* Lista de Receitas Salvas */}
                     <div className="border-t border-[#E8DED5] pt-8">
                         <h3 className="text-2xl font-serif font-bold text-[#4A3630] mb-4 flex items-center gap-2"><Package size={24}/> Minhas Receitas Salvas</h3>
                         <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-4">
