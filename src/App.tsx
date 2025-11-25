@@ -1,8 +1,7 @@
 import React, { useState, useEffect, useMemo } from 'react';
-import { initializeApp } from "firebase/app";
+// Correção 1: Importar getApps para evitar erro de reinicialização
+import { initializeApp, getApps } from "firebase/app";
 import { getAuth, signInWithEmailAndPassword, signOut, onAuthStateChanged } from "firebase/auth";
-
-// --- CORREÇÃO CRÍTICA: TODOS OS ÍCONES IMPORTADOS AQUI ---
 import { 
   Calculator, Settings, Plus, Trash2, Package, Clock, ChefHat, 
   Sparkles, ShoppingCart, Calendar, TrendingUp, LogOut, Copy, Check, Menu, X, 
@@ -20,27 +19,28 @@ const firebaseConfig = {
   measurementId: "G-JR8Z43E95X"
 };
 
-// Inicializa Firebase
-const app = initializeApp(firebaseConfig);
+// Correção 1: Inicializa Firebase COM PROTEÇÃO
+// Verifica se já existe um app inicializado antes de criar outro
+const app = !getApps().length ? initializeApp(firebaseConfig) : getApps()[0];
 const auth = getAuth(app);
 
-// --- TIPOS (Permissivos para evitar erros de build) ---
-interface Ingredient { id: number; name: string; packageWeight: number; cost: number; }
-interface Recipe { id: number; name: string; yields: number; time: number; profit: number; ingredients: any[] }
-interface Client { id: number; name: string; phone: string; birthday: string; }
-interface Order { 
-  id: number; clientId: number; clientName: string; deliveryDate: string; 
-  items: string; value: number; paymentMethod: string; status: string; 
-}
-interface ShoppingItem { type: 'recipe' | 'ingredient'; id: number; count: number; }
-
-// --- DADOS INICIAIS ---
-const initialIngredients: Ingredient[] = [
+// --- DADOS INICIAIS DE SEGURANÇA ---
+const initialIngredients = [
   { id: 1, name: 'Leite Condensado', packageWeight: 395, cost: 5.50 },
   { id: 2, name: 'Creme de Leite', packageWeight: 200, cost: 3.20 },
   { id: 3, name: 'Chocolate 50%', packageWeight: 1000, cost: 35.00 },
   { id: 4, name: 'Manteiga', packageWeight: 200, cost: 12.00 },
 ];
+
+// Função segura para carregar dados (Evita quebra se o dado antigo estiver ruim)
+const safeLoad = (key: string, fallback: any) => {
+  try {
+    const item = localStorage.getItem(key);
+    return item ? JSON.parse(item) : fallback;
+  } catch (e) {
+    return fallback;
+  }
+};
 
 const App = () => {
   // --- ESTADOS GERAIS ---
@@ -52,13 +52,13 @@ const App = () => {
   const [loadingAuth, setLoadingAuth] = useState(true);
   const [loginError, setLoginError] = useState('');
   
-  // --- PERSISTÊNCIA ---
-  const [config, setConfig] = useState(() => JSON.parse(localStorage.getItem('cv_config') || '{"salary":3000,"costs":800,"hours":8,"days":5}'));
-  const [dbIngredients, setDbIngredients] = useState<Ingredient[]>(() => JSON.parse(localStorage.getItem('cv_ingredients') || JSON.stringify(initialIngredients)));
-  const [recipes, setRecipes] = useState<Recipe[]>(() => JSON.parse(localStorage.getItem('cv_recipes') || '[]'));
-  const [clients, setClients] = useState<Client[]>(() => JSON.parse(localStorage.getItem('cv_clients') || '[]'));
-  const [orders, setOrders] = useState<Order[]>(() => JSON.parse(localStorage.getItem('cv_orders') || '[]'));
-  const [companyProfile, setCompanyProfile] = useState<any>(() => JSON.parse(localStorage.getItem('cv_profile') || '{"businessName":"","chefName":""}'));
+  // --- PERSISTÊNCIA (Carregamento Seguro) ---
+  const [config, setConfig] = useState(() => safeLoad('cv_config', {salary:3000,costs:800,hours:8,days:5}));
+  const [dbIngredients, setDbIngredients] = useState<any[]>(() => safeLoad('cv_ingredients', initialIngredients));
+  const [recipes, setRecipes] = useState<any[]>(() => safeLoad('cv_recipes', []));
+  const [clients, setClients] = useState<any[]>(() => safeLoad('cv_clients', []));
+  const [orders, setOrders] = useState<any[]>(() => safeLoad('cv_orders', []));
+  const [companyProfile, setCompanyProfile] = useState<any>(() => safeLoad('cv_profile', {businessName:"",chefName:"",cnpj:""}));
 
   // --- ESTADOS DE FORMULÁRIOS ---
   const [activeRecipe, setActiveRecipe] = useState<any>(null);
@@ -74,9 +74,9 @@ const App = () => {
   const [aiPrompt, setAiPrompt] = useState('');
   const [aiResponse, setAiResponse] = useState('');
   const [isAiLoading, setIsAiLoading] = useState(false);
-  const [shoppingList, setShoppingList] = useState<ShoppingItem[]>([]);
+  const [shoppingList, setShoppingList] = useState<any[]>([]);
 
-  // Efeitos
+  // Efeitos de Salvamento
   useEffect(() => { localStorage.setItem('cv_config', JSON.stringify(config)); }, [config]);
   useEffect(() => { localStorage.setItem('cv_ingredients', JSON.stringify(dbIngredients)); }, [dbIngredients]);
   useEffect(() => { localStorage.setItem('cv_recipes', JSON.stringify(recipes)); }, [recipes]);
@@ -84,13 +84,14 @@ const App = () => {
   useEffect(() => { localStorage.setItem('cv_orders', JSON.stringify(orders)); }, [orders]);
   useEffect(() => { localStorage.setItem('cv_profile', JSON.stringify(companyProfile)); }, [companyProfile]);
   
+  // Login Ágil
   useEffect(() => {
     const unsub = onAuthStateChanged(auth, (u) => { setUser(u); setLoadingAuth(false); });
     return () => unsub();
   }, []);
 
   // --- LÓGICA FINANCEIRA ---
-  const formatMoney = (v: any) => Number(v).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
+  const formatMoney = (v: any) => Number(v || 0).toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' });
   
   const getHourlyRate = () => {
     const totalHours = parseFloat(config.hours) * parseFloat(config.days) * 4.28;
@@ -100,15 +101,17 @@ const App = () => {
 
   const calculateRecipe = (rec: any) => {
     let matCost = 0;
-    rec.ingredients.forEach((i: any) => {
-      const ing = dbIngredients.find(d => d.id === i.id);
-      if (ing) matCost += (ing.cost / ing.packageWeight) * i.qty;
-    });
+    if (rec.ingredients && Array.isArray(rec.ingredients)) {
+        rec.ingredients.forEach((i: any) => {
+          const ing = dbIngredients.find((d: any) => d.id === i.id);
+          if (ing) matCost += (ing.cost / ing.packageWeight) * i.qty;
+        });
+    }
     const varCost = matCost * 0.10; 
     const laborCost = (rec.time / 60) * getHourlyRate();
     const totalCost = matCost + varCost + laborCost;
     const finalPrice = totalCost * (1 + (rec.profit / 100));
-    return { totalCost, finalPrice, unitPrice: finalPrice / (rec.yields || 1) };
+    return { matCost, totalCost, finalPrice, unitPrice: finalPrice / (rec.yields || 1) };
   };
 
   // Lista de Compras Inteligente
@@ -119,20 +122,22 @@ const App = () => {
     shoppingList.forEach(item => {
       if (item.count > 0) {
         if (item.type === 'recipe') {
-          const rec = recipes.find(r => r.id === item.id);
-          rec?.ingredients.forEach((ing: any) => {
-            const dbIng = dbIngredients.find(d => d.id === ing.id);
-            if (dbIng) {
-              const q = ing.qty * item.count;
-              const c = (dbIng.cost / dbIng.packageWeight) * q;
-              if (!totals[dbIng.name]) totals[dbIng.name] = {qty:0, cost:0, unit: 'g'};
-              totals[dbIng.name].qty += q;
-              totals[dbIng.name].cost += c;
-              totalCost += c;
-            }
-          });
+          const rec = recipes.find((r: any) => r.id === item.id);
+          if (rec && rec.ingredients) {
+              rec.ingredients.forEach((ing: any) => {
+                const dbIng = dbIngredients.find((d: any) => d.id === ing.id);
+                if (dbIng) {
+                  const q = ing.qty * item.count;
+                  const c = (dbIng.cost / dbIng.packageWeight) * q;
+                  if (!totals[dbIng.name]) totals[dbIng.name] = {qty:0, cost:0, unit: 'g'};
+                  totals[dbIng.name].qty += q;
+                  totals[dbIng.name].cost += c;
+                  totalCost += c;
+                }
+              });
+          }
         } else {
-          const dbIng = dbIngredients.find(d => d.id === item.id);
+          const dbIng = dbIngredients.find((d: any) => d.id === item.id);
           if (dbIng) {
             const q = dbIng.packageWeight * item.count;
             const c = dbIng.cost * item.count;
@@ -156,17 +161,17 @@ const App = () => {
   };
 
   const handleDeleteIngredient = (id: number) => {
-      const isUsed = recipes.some(r => r.ingredients.some((i: any) => i.id === id));
-      if(isUsed && !window.confirm("Ingrediente em uso. Continuar?")) return;
+      const isUsed = recipes.some((r: any) => r.ingredients?.some((i: any) => i.id === id));
+      if(isUsed && !window.confirm("Este ingrediente é usado em receitas. Continuar?")) return;
       if(!isUsed && !window.confirm("Apagar ingrediente?")) return;
-      setDbIngredients(dbIngredients.filter(i => i.id !== id));
+      setDbIngredients(dbIngredients.filter((i: any) => i.id !== id));
   };
 
   const handleSaveRecipe = () => {
       if (!currentRecipe.name) return alert("Dê um nome para a receita!");
       
       if (isEditingRecipe) {
-          setRecipes(recipes.map(r => r.id === currentRecipe.id ? currentRecipe : r));
+          setRecipes(recipes.map((r: any) => r.id === currentRecipe.id ? currentRecipe : r));
           alert("Receita atualizada!");
           setIsEditingRecipe(false);
       } else {
@@ -185,7 +190,7 @@ const App = () => {
   };
 
   const handleDeleteRecipe = (id: number) => {
-      if(window.confirm("Excluir receita?")) setRecipes(recipes.filter(r => r.id !== id));
+      if(window.confirm("Excluir receita?")) setRecipes(recipes.filter((r: any) => r.id !== id));
   };
 
   const handleAddIngredient = () => {
@@ -197,7 +202,7 @@ const App = () => {
 
   const handleUpdateIngredient = () => {
       if(editingIngredient) {
-          setDbIngredients(dbIngredients.map(ing => ing.id === editingIngredient.id ? editingIngredient : ing));
+          setDbIngredients(dbIngredients.map((ing: any) => ing.id === editingIngredient.id ? editingIngredient : ing));
           setEditingIngredient(null);
       }
   };
@@ -212,7 +217,7 @@ const App = () => {
 
   const handleAddOrder = () => {
       if (newOrder.clientId && newOrder.value) {
-          const client = clients.find(c => c.id === Number(newOrder.clientId));
+          const client = clients.find((c: any) => c.id === Number(newOrder.clientId));
           setOrders([...orders, {
               id: Date.now(),
               clientId: Number(newOrder.clientId),
@@ -230,7 +235,7 @@ const App = () => {
 
   const confirmPayment = (orderId: number) => {
       if(window.confirm("Confirmar pagamento?")) {
-          setOrders(orders.map(o => o.id === orderId ? {...o, status: 'pago'} : o));
+          setOrders(orders.map((o: any) => o.id === orderId ? {...o, status: 'pago'} : o));
       }
   };
 
